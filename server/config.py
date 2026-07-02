@@ -1,6 +1,15 @@
 """Application configuration loaded from environment variables."""
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
+
+# Anchor the .env path to the project root so keys load regardless of the
+# working directory the app is launched from (e.g. `python -m server.main`
+# run from a subdirectory would otherwise find no .env and silently load
+# zero API keys).
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_ENV_FILE = _PROJECT_ROOT / ".env"
 
 
 class Settings(BaseSettings):
@@ -20,7 +29,23 @@ class Settings(BaseSettings):
     LIQUIDSOAP_HARBOR_PORT: int = 8005
     ICECAST_URL: str = "http://localhost:8080/stream"
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    # Comma-separated list of allowed CORS origins for the browser UI. Defaults
+    # to common local-dev origins. Set to "*" only if you understand that the
+    # write API is unauthenticated (see docs). Empty string disables CORS.
+    CORS_ALLOW_ORIGINS: str = (
+        "http://localhost:8000,http://127.0.0.1:8000,"
+        "http://localhost:3000,http://127.0.0.1:3000"
+    )
+
+    model_config = {"env_file": str(_ENV_FILE), "extra": "ignore"}
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """Parse ``CORS_ALLOW_ORIGINS`` into a list of origin strings."""
+        raw = self.CORS_ALLOW_ORIGINS.strip()
+        if not raw:
+            return []
+        return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
 settings = Settings()

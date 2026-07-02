@@ -20,13 +20,13 @@ class TalkSegment(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     show_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("shows.id"), nullable=True
+        Integer, ForeignKey("shows.id", ondelete="SET NULL"), nullable=True
     )
     talk_config_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("talk_show_configs.id"), nullable=True
+        Integer, ForeignKey("talk_show_configs.id", ondelete="SET NULL"), nullable=True
     )
     topic_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("talk_topics.id"), nullable=True
+        Integer, ForeignKey("talk_topics.id", ondelete="SET NULL"), nullable=True
     )
     segment_type: Mapped[str] = mapped_column(String, default="conversation")
     script_text: Mapped[str | None] = mapped_column(Text, nullable=True)

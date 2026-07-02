@@ -21,13 +21,13 @@ class Track(Base):
     filepath: Mapped[str | None] = mapped_column(String, nullable=True)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     style_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("styles.id"), nullable=True
+        Integer, ForeignKey("styles.id", ondelete="SET NULL"), nullable=True, index=True
     )
     style_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_policy_suffix: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration: Mapped[float | None] = mapped_column(Float, nullable=True)
     provider: Mapped[str | None] = mapped_column(String, nullable=True)
-    status: Mapped[str] = mapped_column(String, default="generating")
+    status: Mapped[str] = mapped_column(String, default="generating", index=True)
     loudness_lufs: Mapped[float | None] = mapped_column(Float, nullable=True)
     lyrics: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)

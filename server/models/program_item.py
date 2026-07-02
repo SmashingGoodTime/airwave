@@ -23,15 +23,15 @@ class ProgramItem(Base):
         String(36), unique=True, default=lambda: str(uuid.uuid4())
     )
     item_type: Mapped[str] = mapped_column(String, nullable=False)
-    status: Mapped[str] = mapped_column(String, default="planned")
+    status: Mapped[str] = mapped_column(String, default="planned", index=True)
     audio_asset_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("audio_assets.id"), nullable=True
+        Integer, ForeignKey("audio_assets.id", ondelete="SET NULL"), nullable=True
     )
     show_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("shows.id"), nullable=True
+        Integer, ForeignKey("shows.id", ondelete="SET NULL"), nullable=True
     )
-    source_table: Mapped[str | None] = mapped_column(String, nullable=True)
-    source_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_table: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    source_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     position: Mapped[int] = mapped_column(Integer, default=0)
     planned_start_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -20,7 +20,7 @@ class TalkTopic(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     talk_config_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("talk_show_configs.id"), nullable=False
+        Integer, ForeignKey("talk_show_configs.id", ondelete="CASCADE"), nullable=False
     )
     title: Mapped[str] = mapped_column(String, nullable=False)
     prompt: Mapped[str] = mapped_column(Text, nullable=False)

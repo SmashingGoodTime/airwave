@@ -17,7 +17,7 @@ class PlayLog(Base):
     item_type: Mapped[str] = mapped_column(String, nullable=False)
     item_id: Mapped[int] = mapped_column(Integer, nullable=False)
     started_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc)
+        DateTime, default=lambda: datetime.now(timezone.utc), index=True
     )
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     duration: Mapped[float | None] = mapped_column(Float, nullable=True)

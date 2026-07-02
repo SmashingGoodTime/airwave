@@ -40,7 +40,7 @@ async def test_init_db_runs_alembic_and_creates_defaults(monkeypatch, tmp_path):
         assert "program_items" in tables
         assert "generation_jobs" in tables
         assert station_count == 1
-        assert version == "0002_timeline_foundation"
+        assert version == "0003_hot_column_indexes"
     finally:
         if database._engine is not None:
             await database._engine.dispose()
@@ -124,7 +124,7 @@ async def test_initial_migration_repairs_legacy_missing_columns(monkeypatch, tmp
         assert {"name", "is_default"}.issubset(dj_columns)
         assert "dj_config_id" in show_columns
         assert "lyrics" in track_columns
-        assert version == "0002_timeline_foundation"
+        assert version == "0003_hot_column_indexes"
     finally:
         if database._engine is not None:
             await database._engine.dispose()

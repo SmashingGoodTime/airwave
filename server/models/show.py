@@ -25,10 +25,10 @@ class Show(Base):
     duration_minutes: Mapped[int] = mapped_column(Integer, default=30)
     queue_order: Mapped[int] = mapped_column(Integer, default=0)
     talk_config_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("talk_show_configs.id"), nullable=True
+        Integer, ForeignKey("talk_show_configs.id", ondelete="SET NULL"), nullable=True
     )
     dj_config_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("dj_configs.id"), nullable=True
+        Integer, ForeignKey("dj_configs.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)

@@ -6,6 +6,7 @@ from typing import Optional
 
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -25,13 +26,41 @@ _engine: Optional[AsyncEngine] = None
 _async_session: Optional[async_sessionmaker[AsyncSession]] = None
 
 
+def _configure_sqlite_pragmas(dbapi_connection, connection_record) -> None:
+    """Apply per-connection SQLite pragmas for concurrency and integrity.
+
+    - ``journal_mode=WAL`` lets a writer and readers proceed concurrently.
+    - ``busy_timeout`` makes a blocked connection wait rather than raising
+      ``database is locked`` immediately.
+    - ``foreign_keys=ON`` enforces the ``ondelete`` behaviour declared on the
+      models (SQLite ignores foreign keys unless this is set per connection).
+    """
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA foreign_keys=ON")
+    finally:
+        cursor.close()
+
+
 def get_engine() -> AsyncEngine:
     """Get or create the async SQLAlchemy engine."""
     global _engine
     if _engine is None:
         from server.config import settings
 
-        _engine = create_async_engine(settings.DATABASE_URL, echo=False)
+        is_sqlite = settings.DATABASE_URL.startswith("sqlite")
+        connect_args = {"timeout": 30} if is_sqlite else {}
+        _engine = create_async_engine(
+            settings.DATABASE_URL, echo=False, connect_args=connect_args
+        )
+        if is_sqlite:
+            # aiosqlite exposes the underlying sqlite3 connection via the sync
+            # engine; attach the pragma listener there.
+            event.listen(
+                _engine.sync_engine, "connect", _configure_sqlite_pragmas
+            )
     return _engine
 
 
@@ -69,27 +98,30 @@ async def init_db() -> None:
     """Run migrations and ensure singleton defaults exist.
 
     If no Station row is present after migration, one is inserted with
-    ``setup_complete=True`` so the first-run wizard is skipped.
+    ``setup_complete=False`` so the first-run wizard is presented until the
+    operator completes it.
     """
     import server.models  # noqa: F401 - ensure models are loaded
 
     await run_migrations()
 
-    # Ensure a default Station record exists so the setup wizard is skipped.
+    # Ensure a default Station record exists. It starts with
+    # ``setup_complete=False`` so the first-run wizard gates the UI; the
+    # wizard's /complete endpoint flips this on the same row.
     from sqlalchemy import select
     from server.models.station import Station
 
     async with get_session_factory()() as session:
-        result = await session.execute(select(Station).limit(1))
+        result = await session.execute(select(Station).order_by(Station.id).limit(1))
         if result.scalar_one_or_none() is None:
-            session.add(Station(setup_complete=True))
+            session.add(Station(setup_complete=False))
             await session.commit()
 
     # Ensure the first DJConfig row (if any) is marked as default.
     from server.models.dj_config import DJConfig
 
     async with get_session_factory()() as session:
-        result = await session.execute(select(DJConfig))
+        result = await session.execute(select(DJConfig).order_by(DJConfig.id))
         configs = list(result.scalars().all())
         if configs and not any(c.is_default for c in configs):
             configs[0].is_default = True

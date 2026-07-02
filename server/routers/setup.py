@@ -4,7 +4,7 @@ import logging
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,26 +76,47 @@ async def complete_setup(
 
     Returns:
         A dict with success boolean.
-    """
-    station = Station(
-        timezone=body.timezone,
-        setup_complete=True,
-    )
-    session.add(station)
 
-    dj_config = DJConfig(
-        station_name=body.station_name,
-        dj_name=body.dj_name,
-        personality_prompt=body.personality_prompt,
-        voice_id=body.voice_id,
-        content_policy=body.content_policy,
+    Raises:
+        HTTPException: 409 if setup has already been completed.
+    """
+    # Update the existing singleton Station row (seeded by init_db) rather
+    # than inserting a second one that no reader would ever see.
+    result = await session.execute(select(Station).order_by(Station.id).limit(1))
+    station = result.scalar_one_or_none()
+    if station is None:
+        station = Station()
+        session.add(station)
+
+    if station.setup_complete:
+        raise HTTPException(
+            status_code=409, detail="Setup has already been completed."
+        )
+
+    station.timezone = body.timezone
+    station.setup_complete = True
+
+    # Update the existing default DJConfig if present, else create one.
+    result = await session.execute(
+        select(DJConfig).order_by(DJConfig.id).limit(1)
     )
-    session.add(dj_config)
+    dj_config = result.scalar_one_or_none()
+    if dj_config is None:
+        dj_config = DJConfig(is_default=True)
+        session.add(dj_config)
+    dj_config.station_name = body.station_name
+    dj_config.dj_name = body.dj_name
+    dj_config.personality_prompt = body.personality_prompt
+    dj_config.voice_id = body.voice_id
+    dj_config.content_policy = body.content_policy
 
     for style_input in body.styles:
+        # Skip blank rows the wizard may submit alongside valid ones.
+        if not style_input.name.strip() or not style_input.prompt.strip():
+            continue
         style = Style(
-            name=style_input.name,
-            prompt=style_input.prompt,
+            name=style_input.name.strip(),
+            prompt=style_input.prompt.strip(),
             weight=style_input.weight,
         )
         session.add(style)

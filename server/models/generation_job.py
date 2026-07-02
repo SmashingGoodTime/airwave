@@ -21,14 +21,14 @@ class GenerationJob(Base):
     job_type: Mapped[str] = mapped_column(String, nullable=False)
     capability: Mapped[str | None] = mapped_column(String, nullable=True)
     provider: Mapped[str | None] = mapped_column(String, nullable=True)
-    status: Mapped[str] = mapped_column(String, default="pending")
+    status: Mapped[str] = mapped_column(String, default="pending", index=True)
     priority: Mapped[int] = mapped_column(Integer, default=0)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)
     input_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     output_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     output_asset_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("audio_assets.id"), nullable=True
+        Integer, ForeignKey("audio_assets.id", ondelete="SET NULL"), nullable=True
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
