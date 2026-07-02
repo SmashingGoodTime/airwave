@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+venv/
+.venv/
+.test_deps/
+.pytest_tmp/
+pytest_tmp/
+test_runtime/
+tests/.tmp/
+
+# Node
+node_modules/
+dist/
+
+# Environment
+.env
+
+# Database
+*.db
+*.db-journal
+
+# Audio content (keep fallback tracked)
+audio/tracks/*
+audio/breaks/*
+audio/archive/*
+audio/talks/*
+audio/calls/*
+audio/recordings/*
+!audio/fallback/
+
+# Test / tooling caches
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

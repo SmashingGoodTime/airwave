@@ -1,0 +1,44 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./audio:/app/audio
+    depends_on:
+      - liquidsoap
+      - icecast
+    networks:
+      - radio
+    restart: unless-stopped
+
+  liquidsoap:
+    image: savonet/liquidsoap:v2.2.5
+    command: /etc/liquidsoap/station.liq
+    ports:
+      - "8005:8005"
+    volumes:
+      - ./audio:/audio:ro
+      - ./audio/recordings:/audio/recordings
+      - ./liquidsoap/station.liq:/etc/liquidsoap/station.liq:ro
+    depends_on:
+      - icecast
+    networks:
+      - radio
+    restart: unless-stopped
+
+  icecast:
+    image: libretime/icecast:2.4.4
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./icecast/icecast.xml:/etc/icecast.xml:ro
+    networks:
+      - radio
+    restart: unless-stopped
+
+networks:
+  radio:
+    driver: bridge
