@@ -159,15 +159,21 @@ async def test_start_recording_returns_false_on_error_reply(monkeypatch):
     playout, fake = make_playout(monkeypatch, default=UNKNOWN_COMMAND)
 
     assert await playout.start_recording() is False
-    assert fake.commands == ["recorder.start"]
+    assert fake.commands == ["recorder.set true"]
 
 
 async def test_recording_commands_succeed_on_clean_reply(monkeypatch):
-    playout, fake = make_playout(monkeypatch, default="OK")
+    playout, fake = make_playout(
+        monkeypatch,
+        replies={
+            "recorder.set true": "OK recorder_enabled=true",
+            "recorder.set false": "OK recorder_enabled=false",
+        },
+    )
 
     assert await playout.start_recording() is True
     assert await playout.stop_recording() is True
-    assert fake.commands == ["recorder.start", "recorder.stop"]
+    assert fake.commands == ["recorder.set true", "recorder.set false"]
 
 
 async def test_is_recording_parses_status(monkeypatch):

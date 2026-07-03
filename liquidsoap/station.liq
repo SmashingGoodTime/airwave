@@ -159,12 +159,40 @@ end)
 # =====================
 # Local Recording Output
 # =====================
-# Records the final mixed stream to hourly MP3 files.
-# start=false: nothing records until the app sends recorder.start.
-# register_telnet defaults to true, so this output registers the
-# recorder.start / recorder.stop / recorder.status telnet commands.
+# Records the final mixed stream to hourly MP3 files, but only while
+# recording is enabled. An output.file registers no start/stop telnet
+# commands of its own in 2.2.x, so — like the caller — recording is gated
+# by a flag toggled via a custom "recorder.set true|false" command and the
+# output is fed a source that is only available when the flag is set.
 # Files are saved as /audio/recordings/YYYY-MM-DD-HH.mp3
 rec_dir = "/audio/recordings/"
+
+recorder_enabled = ref(false)
+
+server.register(
+  namespace="recorder",
+  description="Enable or disable local stream recording.",
+  usage="set true|false",
+  "set",
+  fun (arg) -> begin
+    if arg == "true" then
+      recorder_enabled := true
+      "OK recorder_enabled=true"
+    elsif arg == "false" then
+      recorder_enabled := false
+      "OK recorder_enabled=false"
+    else
+      "ERROR usage: recorder.set true|false"
+    end
+  end
+)
+
+server.register(
+  namespace="recorder",
+  description="Show whether local recording is enabled.",
+  "status",
+  fun (_) -> if recorder_enabled() then "on" else "off" end
+)
 
 # Track the current hour to detect when it changes (hourly file rotation)
 last_rec_hour = ref(-1)
@@ -179,15 +207,20 @@ def should_reopen()
   end
 end
 
+# Only carries audio while recording is enabled, so no file is written
+# (and no empty file is created) while recording is off.
+recorder_source = source.available(
+  id="recorder_src", radio, {recorder_enabled()}
+)
+
 output.file(
   %mp3(bitrate=192),
   id="recorder",
   fallible=true,
-  start=false,
   reopen_on_error=fun(_) -> 1.0,
   reopen_when=should_reopen,
   {rec_dir ^ time.string("%Y-%m-%d-%H") ^ ".mp3"},
-  radio
+  recorder_source
 )
 
 # =====================
@@ -196,7 +229,7 @@ output.file(
 # Stream to the Icecast server as MP3 at 192kbps.
 # id="radio_out" + register_telnet (default true) expose the output-level
 # telnet commands the app relies on: radio_out.skip / radio_out.metadata /
-# radio_out.remaining / radio_out.start / radio_out.stop / radio_out.status.
+# radio_out.remaining.
 output.icecast(
   %mp3(bitrate=192),
   id="radio_out",

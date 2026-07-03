@@ -13,16 +13,15 @@
         <burst-size>65535</burst-size>
     </limits>
 
-    <!-- SECURITY: The values below are placeholders. At container start,
-         docker-compose copies this file into place and the image entrypoint
-         replaces source-password and admin-password with the
-         ICECAST_SOURCE_PASSWORD and ICECAST_ADMIN_PASSWORD values from your
-         .env file. Set real passwords there before deploying. -->
+    <!-- SECURITY: The @...@ tokens below are placeholders. At container start,
+         icecast/entrypoint.sh renders this template into /tmp/icecast.xml,
+         substituting ICECAST_SOURCE_PASSWORD and ICECAST_ADMIN_PASSWORD from
+         your .env file. Set real passwords there before deploying. -->
     <authentication>
-        <source-password>hackme</source-password>
-        <relay-password>hackme</relay-password>
+        <source-password>@ICECAST_SOURCE_PASSWORD@</source-password>
+        <relay-password>@ICECAST_SOURCE_PASSWORD@</relay-password>
         <admin-user>admin</admin-user>
-        <admin-password>hackme</admin-password>
+        <admin-password>@ICECAST_ADMIN_PASSWORD@</admin-password>
     </authentication>
 
     <hostname>localhost</hostname>

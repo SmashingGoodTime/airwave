@@ -1,0 +1,20 @@
+# Normalize text line endings, but never touch binary assets. Without this,
+# core.autocrlf mangles/reports binary files (e.g. the fallback WAVs) as
+# modified and makes commits that stage them extremely slow.
+* text=auto
+
+# Audio / binary media
+*.wav binary
+*.mp3 binary
+*.ogg binary
+*.flac binary
+*.m4a binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+
+# Shell scripts must keep LF endings even on Windows checkouts (they run in
+# Linux containers).
+*.sh text eol=lf

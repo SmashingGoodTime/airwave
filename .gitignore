@@ -35,6 +35,8 @@ audio/talks/*
 audio/calls/*
 audio/recordings/*
 !audio/fallback/
+# Generated cache of loudness-normalized fallback copies (created at runtime)
+audio/fallback/normalized/
 
 # Test / tooling caches
 .pytest_cache/

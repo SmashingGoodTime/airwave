@@ -9,12 +9,15 @@ services:
       # would silently create a directory named .env instead.
       - .env
     environment:
-      # Store the SQLite database on the host (./data) so station state
-      # survives container recreation.
+      # Store the SQLite database on the named "radio-data" volume so station
+      # state survives container recreation. A named volume (not a host bind
+      # mount) is used because it inherits the image mountpoint's ownership
+      # (the non-root "radio" user), avoiding "readonly database" errors that
+      # a root-owned, auto-created host directory would cause.
       DATABASE_URL: sqlite+aiosqlite:////data/radio.db
     volumes:
       - ./audio:/app/audio
-      - ./data:/data
+      - radio-data:/data
       # The setup wizard writes API keys back to .env; bind-mount it so
       # keys entered through the UI survive container recreation.
       - ./.env:/app/.env
@@ -61,31 +64,32 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # Consumed by icecast/entrypoint.sh (relay-password reuses the source
+      # password in the template, so no default "hackme" credential stays live).
       ICECAST_SOURCE_PASSWORD: ${ICECAST_SOURCE_PASSWORD:-hackme}
       ICECAST_ADMIN_PASSWORD: ${ICECAST_ADMIN_PASSWORD:-hackme}
-      # Relaying is unused; keep its credential in sync with the source
-      # password so no default "hackme" credential stays live.
-      ICECAST_RELAY_PASSWORD: ${ICECAST_SOURCE_PASSWORD:-hackme}
     volumes:
-      # Mounted as a template rather than directly at /etc/icecast.xml:
-      # the image's entrypoint patches /etc/icecast.xml in place from the
-      # ICECAST_* env vars above, which a :ro mount at the real path
-      # would silently break. The override below copies the template into
-      # place, then hands off to the stock entrypoint for env patching.
+      # Our config is mounted as a template; entrypoint.sh renders it (with the
+      # passwords above) into a writable /tmp copy and execs icecast on that.
+      # The image's baked-in /etc/icecast.xml is owned by root and cannot be
+      # replaced by the non-root icecast user, so we never touch it.
       - ./icecast/icecast.xml:/etc/icecast.tmpl.xml:ro
-    entrypoint:
-      - /bin/sh
-      - -c
-      - cp /etc/icecast.tmpl.xml /etc/icecast.xml && exec docker-entrypoint icecast -c /etc/icecast.xml
+      - ./icecast/entrypoint.sh:/etc/icecast-entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/etc/icecast-entrypoint.sh"]
     healthcheck:
+      # Icecast always answers /status.xsl once it is listening.
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/status.xsl"]
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      start_period: 20s
     networks:
       - radio
     restart: unless-stopped
+
+volumes:
+  # Persistent SQLite database (see the app service DATABASE_URL note).
+  radio-data:
 
 networks:
   radio:

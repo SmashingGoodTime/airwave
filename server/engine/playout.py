@@ -443,31 +443,42 @@ class PlayoutInterface:
     async def start_recording(self) -> bool:
         """Start the local stream recording output in Liquidsoap.
 
-        The recorder output is created with start=false in station.liq,
-        so nothing is recorded until this command is sent.
+        Sends the custom "recorder.set true" command registered in
+        station.liq, which enables the gated source feeding the file
+        output (an output.file registers no start/stop telnet commands).
 
         Returns:
-            True if the command was acknowledged without error.
+            True if Liquidsoap confirmed the flag was set.
         """
-        response = await self._send_command("recorder.start")
-        if self._is_error_reply(response):
+        response = await self._send_command("recorder.set true")
+        ok = (
+            not self._is_error_reply(response)
+            and response is not None
+            and response.strip().startswith("OK")
+        )
+        if ok:
+            logger.info("Recording started (response: %s)", response.strip()[:50])
+        else:
             logger.warning("Failed to start recording (response: %s)", response)
-            return False
-        logger.info("Recording started (response: %s)", response.strip()[:50])
-        return True
+        return ok
 
     async def stop_recording(self) -> bool:
         """Stop the local stream recording output in Liquidsoap.
 
         Returns:
-            True if the command was acknowledged without error.
+            True if Liquidsoap confirmed the flag was cleared.
         """
-        response = await self._send_command("recorder.stop")
-        if self._is_error_reply(response):
+        response = await self._send_command("recorder.set false")
+        ok = (
+            not self._is_error_reply(response)
+            and response is not None
+            and response.strip().startswith("OK")
+        )
+        if ok:
+            logger.info("Recording stopped (response: %s)", response.strip()[:50])
+        else:
             logger.warning("Failed to stop recording (response: %s)", response)
-            return False
-        logger.info("Recording stopped (response: %s)", response.strip()[:50])
-        return True
+        return ok
 
     async def is_recording(self) -> bool:
         """Check if the recorder output is currently active.
