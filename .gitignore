@@ -20,9 +20,12 @@ dist/
 # Environment
 .env
 
-# Database
+# Database (SQLite + WAL side files, and the persistent data volume)
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
+data/
 
 # Audio content (keep fallback tracked)
 audio/tracks/*
