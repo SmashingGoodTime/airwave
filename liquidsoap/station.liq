@@ -138,22 +138,38 @@ def smart_crossfade(a, b)
   end
 end
 
+# Track start capture — MUST be BEFORE cross(): the crossfade operator
+# strips the per-request "filename" metadata, so capturing after it yields
+# "unknown". The app polls "nowplaying.file" to reconcile now-playing/playlog
+# state against what is ACTUALLY airing, rather than what was last pushed to
+# the queue (queue pushes happen a track ahead of air, so queue != air time).
+# With a 3s crossfade this fires ~3s before the track is fully dominant —
+# still vastly more accurate than queue time.
+now_playing_file = ref("")
+
+radio = source.on_track(radio, fun(m) -> begin
+  fname = list.assoc(default="unknown", "filename", m)
+  now_playing_file := fname
+  log("Track started: #{fname}")
+end)
+
+server.register(
+  namespace="nowplaying",
+  description="Absolute path of the file currently on air (empty if unknown).",
+  "file",
+  fun (_) -> now_playing_file()
+)
+
 radio = cross(duration=3.0, smart_crossfade, radio)
 
 # =====================
 # Metadata Handling
 # =====================
-# Log metadata changes for debugging
+# Log metadata changes for debugging (post-cross is fine for logging).
 radio = source.on_metadata(radio, fun(m) -> begin
   title = list.assoc(default="Unknown Title", "title", m)
   artist = list.assoc(default="Unknown Artist", "artist", m)
   log("Now playing: #{artist} - #{title}")
-end)
-
-# Track start logging
-radio = source.on_track(radio, fun(m) -> begin
-  fname = list.assoc(default="unknown", "filename", m)
-  log("Track started: #{fname}")
 end)
 
 # =====================

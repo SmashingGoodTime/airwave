@@ -351,6 +351,26 @@ class PlayoutInterface:
                 return block
         return {}
 
+    async def get_now_playing_file(self) -> str | None:
+        """Return the absolute path of the file currently on air.
+
+        Reads the custom ``nowplaying.file`` telnet command registered in
+        station.liq, which reflects the file the ``on_track`` handler last
+        saw (captured before the crossfade so the per-request ``filename``
+        metadata is preserved). This is what is ACTUALLY airing, as opposed
+        to what was last pushed to the queue.
+
+        Returns:
+            The on-air file path, or None if unknown/empty or on failure.
+        """
+        response = await self._send_command("nowplaying.file")
+        if not response or self._is_error_reply(response):
+            return None
+        path = response.strip()
+        if not path or path == "unknown":
+            return None
+        return path
+
     async def update_metadata(self, title: str, artist: str = "AI Radio") -> bool:
         """Deprecated: does nothing and always returns False.
 
