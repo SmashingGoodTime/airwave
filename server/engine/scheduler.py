@@ -40,7 +40,7 @@ from server.models.show import Show
 from server.models.station import Station
 from server.models.talk_segment import TalkSegment
 from server.models.track import Track
-from server.utils.timeutils import utcnow_naive
+from server.utils.timeutils import to_utc_iso, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,13 @@ class MasterScheduler:
         self._intro_pending = False
         # Single writer for show transitions (see _show_transition_step)
         self._show_lock = asyncio.Lock()
+        # Air-time reconciliation (see _reconcile_now_playing): the file path
+        # Liquidsoap last reported on air, and the PlayLog row opened for it
+        # (so its ended_at can be set when the next item takes over). These
+        # make now-playing/playlog reflect what is ACTUALLY airing rather than
+        # what was last pushed to the queue a track ahead.
+        self._on_air_path: str | None = None
+        self._on_air_playlog_id: int | None = None
 
     async def start(self) -> None:
         """Start all scheduler loops as background tasks."""
@@ -414,30 +421,8 @@ class MasterScheduler:
                     )
                     if queued:
                         self._dj_brain.reset_break_counter()
-                        dj_break.status = "playing"
-                        await self._log_play(
-                            session,
-                            "dj_break",
-                            dj_break.id,
-                            dj_break.duration,
-                            {"is_show_intro": True},
-                        )
-                        await self._record_timeline_update(
-                            lambda timeline_session: mark_source_playing(
-                                timeline_session,
-                                "dj_breaks",
-                                dj_break.id,
-                            )
-                        )
-                        event_bus.emit(
-                            "break.started",
-                            {
-                                "break_id": dj_break.id,
-                                "is_show_intro": True,
-                                "script_text": dj_break.script_text or "",
-                                "duration": dj_break.duration or 0,
-                            },
-                        )
+                        dj_break.status = "queued"
+                        await session.commit()
                         logger.info("Show intro queued for playout")
                     else:
                         logger.warning(
@@ -499,7 +484,14 @@ class MasterScheduler:
         Args:
             session: Async database session.
         """
-        if not self._streaming or self._intro_pending:
+        if not self._streaming:
+            return
+
+        # Reconcile now-playing/playlog against what is ACTUALLY on air on
+        # every tick while streaming (independent of queueing decisions).
+        await self._reconcile_now_playing(session)
+
+        if self._intro_pending:
             # While an intro is being generated/queued, nothing may be
             # queued ahead of it.
             return
@@ -613,30 +605,8 @@ class MasterScheduler:
                         )
                         if queued:
                             self._dj_brain.reset_break_counter()
-                            intro.status = "playing"
-                            await self._log_play(
-                                session,
-                                "dj_break",
-                                intro.id,
-                                intro.duration,
-                                {"is_show_intro": True, "show_id": active_show.id},
-                            )
-                            await self._record_timeline_update(
-                                lambda timeline_session: mark_source_playing(
-                                    timeline_session,
-                                    "dj_breaks",
-                                    intro.id,
-                                )
-                            )
-                            event_bus.emit(
-                                "break.started",
-                                {
-                                    "break_id": intro.id,
-                                    "is_show_intro": True,
-                                    "script_text": intro.script_text or "",
-                                    "duration": intro.duration or 0,
-                                },
-                            )
+                            intro.status = "queued"
+                            await session.commit()
                             logger.info(
                                 "Show intro queued for '%s'", active_show.name
                             )
@@ -704,46 +674,12 @@ class MasterScheduler:
                         dj_break.audio_filepath, title=break_title
                     )
                     if queued:
-                        # The break counter resets ONLY here, after the
-                        # break has actually been pushed to playout.
+                        # The break counter resets ONLY here, after the break
+                        # has actually been pushed to playout. Status/playlog/
+                        # events are handled at air time by the reconciler.
                         self._dj_brain.reset_break_counter()
-                        closed_breaks = await self._close_playing_breaks(
-                            session
-                        )
-                        dj_break.status = "playing"
-                        await self._log_play(
-                            session,
-                            "dj_break",
-                            dj_break.id,
-                            dj_break.duration,
-                        )
-                        for closed_id in closed_breaks:
-                            await self._record_timeline_update(
-                                lambda timeline_session, closed_id=closed_id: mark_source_played(
-                                    timeline_session,
-                                    "dj_breaks",
-                                    closed_id,
-                                )
-                            )
-                        await self._record_timeline_update(
-                            lambda timeline_session: mark_source_playing(
-                                timeline_session,
-                                "dj_breaks",
-                                dj_break.id,
-                            )
-                        )
-                        if dj_break.context:
-                            await self._update_announcement_plays(
-                                session, dj_break.context
-                            )
-                        event_bus.emit(
-                            "break.started",
-                            {
-                                "break_id": dj_break.id,
-                                "script_text": dj_break.script_text or "",
-                                "duration": dj_break.duration or 0,
-                            },
-                        )
+                        dj_break.status = "queued"
+                        await session.commit()
                         return
                     # Queue push failed — keep the break for the next tick
                     # instead of silently dropping it.
@@ -845,32 +781,6 @@ class MasterScheduler:
             _generate(), name="break_pregen",
         )
         logger.info("Started pre-generating DJ break in background")
-
-    async def _close_playing_breaks(self, session: AsyncSession) -> list[int]:
-        """Mark any still-playing DJ breaks as played.
-
-        Mirrors the track/talk-segment lifecycle: when the next item is
-        queued, whatever break was playing is over. The caller is
-        responsible for committing the session and recording the returned
-        IDs into the timeline via ``mark_source_played``.
-
-        Args:
-            session: Async database session.
-
-        Returns:
-            IDs of the DJ breaks that were closed.
-        """
-        result = await session.execute(
-            select(DJBreak).where(DJBreak.status == "playing")
-        )
-        closed: list[int] = []
-        for dj_break in result.scalars().all():
-            dj_break.status = "played"
-            if dj_break.played_at is None:
-                dj_break.played_at = utcnow_naive()
-            closed.append(dj_break.id)
-            event_bus.emit("break.ended", {"break_id": dj_break.id})
-        return closed
 
     async def _get_active_show(self, session: AsyncSession) -> Show | None:
         """Find the currently active show based on broadcast mode and timers.
@@ -1149,63 +1059,10 @@ class MasterScheduler:
             artist=show.name,
         )
         if queued:
-            prev_result = await session.execute(
-                select(TalkSegment).where(TalkSegment.status == "playing")
-            )
-            previous_segments = list(prev_result.scalars().all())
-            for prev_segment in previous_segments:
-                prev_segment.status = "played"
-                event_bus.emit(
-                    "talk_segment.ended",
-                    {"segment_id": prev_segment.id},
-                )
-            closed_breaks = await self._close_playing_breaks(session)
-
-            segment.status = "playing"
-            segment.played_at = datetime.now(timezone.utc)
+            # Air-time state (playing/played, playlog, events) is handled by
+            # the reconciler when Liquidsoap actually starts the segment.
+            segment.status = "queued"
             await session.commit()
-
-            for prev_segment in previous_segments:
-                await self._record_timeline_update(
-                    lambda timeline_session, prev_segment_id=prev_segment.id: mark_source_played(
-                        timeline_session,
-                        "talk_segments",
-                        prev_segment_id,
-                    )
-                )
-            for closed_id in closed_breaks:
-                await self._record_timeline_update(
-                    lambda timeline_session, closed_id=closed_id: mark_source_played(
-                        timeline_session,
-                        "dj_breaks",
-                        closed_id,
-                    )
-                )
-            await self._record_timeline_update(
-                lambda timeline_session: mark_source_playing(
-                    timeline_session,
-                    "talk_segments",
-                    segment.id,
-                )
-            )
-
-            await self._log_play(
-                session,
-                "talk_segment",
-                segment.id,
-                segment.duration,
-                {
-                    "show": show.name,
-                    "type": segment.segment_type,
-                },
-            )
-
-            event_bus.emit("talk_segment.started", {
-                "segment_id": segment.id,
-                "show_id": show.id,
-                "type": segment.segment_type,
-                "duration": segment.duration,
-            })
             return True
 
         return False
@@ -1292,82 +1149,21 @@ class MasterScheduler:
             artist=cfg.station_name if cfg else "AI Radio",
         )
         if queued:
-            # Mark any previously-playing tracks as played
-            prev_result = await session.execute(
-                select(Track).where(Track.status == "playing")
-            )
-            previous_tracks = list(prev_result.scalars().all())
-            for prev_track in previous_tracks:
-                prev_track.status = "played"
-                event_bus.emit(
-                    "track.ended",
-                    {"track_id": prev_track.id, "title": prev_track.title},
-                )
-            closed_breaks = await self._close_playing_breaks(session)
-
-            track.status = "playing"
-            track.played_at = datetime.now(timezone.utc)
+            # Mark the track as queued (not playing): the air-time reconciler
+            # flips it to "playing", writes the playlog, and emits
+            # track.started when Liquidsoap actually starts it. track_played()
+            # advances the break-pacing counter at queue time so breaks are
+            # still spaced by queue order.
+            track.status = "queued"
             await session.commit()
-
-            for prev_track in previous_tracks:
-                prev_track_id = prev_track.id
-                await self._record_timeline_update(
-                    lambda timeline_session: mark_source_played(
-                        timeline_session,
-                        "tracks",
-                        prev_track_id,
-                    ),
-                )
-            for closed_id in closed_breaks:
-                await self._record_timeline_update(
-                    lambda timeline_session, closed_id=closed_id: mark_source_played(
-                        timeline_session,
-                        "dj_breaks",
-                        closed_id,
-                    )
-                )
-            track_id = track.id
-            await self._record_timeline_update(
-                lambda timeline_session: mark_source_playing(
-                    timeline_session,
-                    "tracks",
-                    track_id,
-                ),
-            )
-
             self._dj_brain.track_played()
-
-            await self._log_play(
-                session,
-                "track",
-                track.id,
-                track.duration,
-                {
-                    "title": track.title,
-                    "style_prompt": track.style_prompt,
-                },
-            )
-
-            event_bus.emit(
-                "track.started",
-                {
-                    "track_id": track.id,
-                    "title": track.title,
-                    "duration": track.duration,
-                    "style": track.style_prompt,
-                    "lyrics": track.lyrics or "",
-                    "started_at": track.played_at.isoformat()
-                    if track.played_at
-                    else None,
-                },
-            )
 
     async def _handle_dead_air(self, session: AsyncSession) -> None:
         """Activate fallback audio when no tracks are available.
 
         Args:
-            session: Async database session, used to record the fallback
-                play in the compliance log.
+            session: Async database session (retained for signature stability;
+                fallback airtime is logged by the reconciler).
         """
         event_bus.emit("buffer.critical", {"ready": 0, "target": 0})
 
@@ -1389,22 +1185,194 @@ class MasterScheduler:
         logger.warning(
             "Dead air protection: queueing fallback %s", fallback.name
         )
-        queued = await self._playout.queue_track(
+        # Fallback airtime is logged for compliance by the reconciler when the
+        # file actually reaches air (it recognises /audio/fallback/ paths),
+        # which also covers Liquidsoap's own fallback playlist.
+        await self._playout.queue_track(
             str(fallback), title=fallback.stem, artist="AI Radio (fallback)"
         )
-        # Log fallback airtime for compliance — stations must account for
-        # everything that goes to air, including emergency fallback.
-        if queued:
-            try:
-                await self._log_play(
-                    session,
-                    "fallback",
-                    0,
-                    None,
-                    {"filename": fallback.name, "filepath": str(fallback)},
+
+    async def _map_on_air_path(
+        self, session: AsyncSession, path: str
+    ) -> tuple[str, object | None]:
+        """Map an on-air file path to its source row.
+
+        Matches on the (unique) file basename so a relative DB path resolves
+        against the absolute container path Liquidsoap reports.
+
+        Args:
+            session: Async database session.
+            path: The on-air file path from Liquidsoap.
+
+        Returns:
+            (kind, row) where kind is 'track', 'dj_break', 'talk_segment',
+            'fallback', or 'unknown'; row is the ORM object or None.
+        """
+        suffix = f"%{Path(path).name}"
+
+        track = (
+            await session.execute(
+                select(Track).where(Track.filepath.like(suffix))
+            )
+        ).scalars().first()
+        if track is not None:
+            return ("track", track)
+
+        dj_break = (
+            await session.execute(
+                select(DJBreak).where(DJBreak.audio_filepath.like(suffix))
+            )
+        ).scalars().first()
+        if dj_break is not None:
+            return ("dj_break", dj_break)
+
+        segment = (
+            await session.execute(
+                select(TalkSegment).where(
+                    TalkSegment.audio_filepath.like(suffix)
                 )
-            except Exception as exc:  # never let logging break dead-air recovery
-                logger.warning("Could not log fallback play: %s", exc)
+            )
+        ).scalars().first()
+        if segment is not None:
+            return ("talk_segment", segment)
+
+        if Path(path).parent.name == "fallback" or "/fallback/" in path:
+            return ("fallback", None)
+        return ("unknown", None)
+
+    async def _reconcile_now_playing(self, session: AsyncSession) -> None:
+        """Align now-playing/playlog state with what is ACTUALLY on air.
+
+        Polls Liquidsoap for the file currently airing (captured pre-crossfade
+        in station.liq). On a change, the previously-airing item is closed
+        (marked played, playlog ``ended_at`` stamped) and the newly-airing
+        item is opened (marked playing, playlog written with an accurate
+        ``started_at``, ``*.started`` emitted). This decouples air-time state
+        from queue time, which runs a track ahead.
+
+        Args:
+            session: Async database session.
+        """
+        current = await self._playout.get_now_playing_file()
+        if current is None or current == self._on_air_path:
+            return
+
+        now = utcnow_naive()
+        previous = self._on_air_path
+        self._on_air_path = current
+
+        if previous is not None:
+            await self._close_on_air(session, previous, now)
+        await self._open_on_air(session, current, now)
+        await session.commit()
+
+    async def _open_on_air(
+        self, session: AsyncSession, path: str, now: datetime
+    ) -> None:
+        """Mark the newly-airing item playing and log its air-time start."""
+        kind, row = await self._map_on_air_path(session, path)
+        self._on_air_playlog_id = None
+
+        if kind == "fallback":
+            log = await self._log_play(
+                session, "fallback", 0, None, {"filename": Path(path).name}
+            )
+            self._on_air_playlog_id = log.id
+            return
+
+        if row is None or getattr(row, "status", None) == "playing":
+            # Unknown file, or already opened (e.g. after an app restart) —
+            # don't double-log or re-emit.
+            return
+
+        row.status = "playing"
+        row.played_at = now
+        row_id = row.id
+
+        if kind == "track":
+            await self._record_timeline_update(
+                lambda ts: mark_source_playing(ts, "tracks", row_id)
+            )
+            log = await self._log_play(
+                session, "track", row.id, row.duration,
+                {"title": row.title, "style_prompt": row.style_prompt},
+            )
+            self._on_air_playlog_id = log.id
+            event_bus.emit(
+                "track.started",
+                {
+                    "track_id": row.id,
+                    "title": row.title,
+                    "duration": row.duration,
+                    "style": row.style_prompt,
+                    "lyrics": row.lyrics or "",
+                    "started_at": to_utc_iso(now),
+                },
+            )
+        elif kind == "dj_break":
+            await self._record_timeline_update(
+                lambda ts: mark_source_playing(ts, "dj_breaks", row_id)
+            )
+            log = await self._log_play(
+                session, "dj_break", row.id, row.duration, None
+            )
+            self._on_air_playlog_id = log.id
+            if row.context:
+                await self._update_announcement_plays(session, row.context)
+            event_bus.emit(
+                "break.started",
+                {
+                    "break_id": row.id,
+                    "script_text": row.script_text or "",
+                    "duration": row.duration or 0,
+                },
+            )
+        elif kind == "talk_segment":
+            await self._record_timeline_update(
+                lambda ts: mark_source_playing(ts, "talk_segments", row_id)
+            )
+            log = await self._log_play(
+                session, "talk_segment", row.id, row.duration, None
+            )
+            self._on_air_playlog_id = log.id
+            event_bus.emit(
+                "talk_segment.started",
+                {"segment_id": row.id, "duration": row.duration or 0},
+            )
+
+    async def _close_on_air(
+        self, session: AsyncSession, path: str, now: datetime
+    ) -> None:
+        """Mark the item that just left air as played and stamp ended_at."""
+        if self._on_air_playlog_id is not None:
+            playlog = await session.get(PlayLog, self._on_air_playlog_id)
+            if playlog is not None and playlog.ended_at is None:
+                playlog.ended_at = now
+            self._on_air_playlog_id = None
+
+        kind, row = await self._map_on_air_path(session, path)
+        if row is None or getattr(row, "status", None) != "playing":
+            return
+
+        row.status = "played"
+        row_id = row.id
+        if kind == "track":
+            await self._record_timeline_update(
+                lambda ts: mark_source_played(ts, "tracks", row_id)
+            )
+            event_bus.emit(
+                "track.ended", {"track_id": row.id, "title": row.title}
+            )
+        elif kind == "dj_break":
+            await self._record_timeline_update(
+                lambda ts: mark_source_played(ts, "dj_breaks", row_id)
+            )
+            event_bus.emit("break.ended", {"break_id": row.id})
+        elif kind == "talk_segment":
+            await self._record_timeline_update(
+                lambda ts: mark_source_played(ts, "talk_segments", row_id)
+            )
+            event_bus.emit("talk_segment.ended", {"segment_id": row.id})
 
     async def _log_play(
         self,
@@ -1413,15 +1381,21 @@ class MasterScheduler:
         item_id: int,
         duration: float | None,
         metadata: dict | None = None,
-    ) -> None:
+    ) -> PlayLog:
         """Record a played item in the play log.
+
+        ``started_at`` defaults to now, so callers should invoke this when the
+        item actually goes on air (see :meth:`_reconcile_now_playing`).
 
         Args:
             session: Async database session.
-            item_type: 'track' or 'dj_break'.
-            item_id: ID of the played item.
-            duration: Duration in seconds.
+            item_type: 'track', 'dj_break', 'talk_segment', or 'fallback'.
+            item_id: ID of the played item (0 for fallback).
+            duration: Nominal duration in seconds.
             metadata: Optional metadata dict.
+
+        Returns:
+            The created PlayLog row (flushed so ``id`` is populated).
         """
         log = PlayLog(
             item_type=item_type,
@@ -1430,7 +1404,8 @@ class MasterScheduler:
             metadata_json=json.dumps(metadata) if metadata else None,
         )
         session.add(log)
-        await session.commit()
+        await session.flush()
+        return log
 
     async def _run_cleanup(self, session: AsyncSession) -> None:
         """Archive played tracks and purge old files past retention.
@@ -1510,6 +1485,27 @@ class MasterScheduler:
         if stale_count:
             logger.info(
                 "Marked %d stale playing tracks as played", stale_count
+            )
+
+        # Reset tracks stuck in "queued" back to "ready" (>30 min): the app
+        # pushed them to Liquidsoap but they never reached air — e.g. the
+        # Liquidsoap container restarted and dropped its request queue. This
+        # is well beyond any real track length, so it only catches orphans.
+        queued_cutoff = utcnow_naive() - timedelta(minutes=30)
+        result = await session.execute(
+            select(Track).where(Track.status == "queued")
+        )
+        requeued = 0
+        for track in result.scalars().all():
+            created = track.created_at
+            if created is not None and created.tzinfo is not None:
+                created = created.replace(tzinfo=None)
+            if created is None or created < queued_cutoff:
+                track.status = "ready"
+                requeued += 1
+        if requeued:
+            logger.info(
+                "Reset %d orphaned 'queued' tracks back to 'ready'", requeued
             )
 
         # Clean up failed tracks (remove DB records for tracks with no file)

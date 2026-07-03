@@ -27,6 +27,7 @@ class FakePlayout:
         self.queued_tracks: list[str] = []
         self.queued_breaks: list[str] = []
         self.metadata_updates: list[tuple[str, str]] = []
+        self.now_playing_file: str | None = None
 
     async def get_queue_length(self) -> int:
         """Return the configured queue length."""
@@ -57,12 +58,26 @@ class FakePlayout:
         self.metadata_updates.append((title, artist))
         return False
 
+    async def get_now_playing_file(self) -> str | None:
+        """Return the file the test has marked as currently on air."""
+        return self.now_playing_file
+
 
 def make_scheduler(fake_playout: FakePlayout | None = None) -> MasterScheduler:
     """Create a scheduler with external playout replaced by a fake."""
     scheduler = MasterScheduler()
     scheduler._playout = fake_playout or FakePlayout()
     return scheduler
+
+
+async def air(scheduler: MasterScheduler, session, filepath) -> None:
+    """Simulate Liquidsoap starting ``filepath`` on air and reconcile once.
+
+    Mirrors the production flow where now-playing/playlog transitions happen
+    at air time (driven by ``nowplaying.file``), not at queue time.
+    """
+    scheduler._playout.now_playing_file = str(filepath) if filepath else None
+    await scheduler._reconcile_now_playing(session)
 
 
 def runtime_path(tmp_path: Path, filename: str) -> Path:
@@ -90,7 +105,10 @@ async def test_queue_next_track_marks_previous_playing_as_played_and_logs(
         lambda event, data=None: events.append((event, data or {})),
     )
 
+    prev_file = runtime_path(tmp_path, "prev.wav")
+    prev_file.write_bytes(b"fake wav")
     previous = Track(
+        filepath=str(prev_file),
         title="Old Song",
         status="playing",
         played_at=datetime.now(timezone.utc),
@@ -115,17 +133,26 @@ async def test_queue_next_track_marks_previous_playing_as_played_and_logs(
 
     fake_playout = FakePlayout()
     scheduler = make_scheduler(fake_playout)
+    # Simulate the previous track already being on air.
+    scheduler._on_air_path = str(prev_file)
 
+    # Queueing only marks the track "queued" — no premature air-time state.
     await scheduler._queue_next_track(db_session)
+    await db_session.refresh(next_track)
+    assert next_track.status == "queued"
+    assert fake_playout.queued_tracks == [str(audio_file)]
+    assert fake_playout.metadata_updates == [("Next Song", "Test FM")]
+    assert scheduler._dj_brain._tracks_since_break == 1
+    assert (await db_session.execute(select(PlayLog))).scalars().first() is None
+
+    # Liquidsoap starts the new track — the reconciler applies air-time state.
+    await air(scheduler, db_session, audio_file)
 
     await db_session.refresh(previous)
     await db_session.refresh(next_track)
     assert previous.status == "played"
     assert next_track.status == "playing"
     assert next_track.played_at is not None
-    assert fake_playout.queued_tracks == [str(audio_file)]
-    assert fake_playout.metadata_updates == [("Next Song", "Test FM")]
-    assert scheduler._dj_brain._tracks_since_break == 1
 
     logs = (await db_session.execute(select(PlayLog))).scalars().all()
     assert len(logs) == 1
@@ -148,7 +175,10 @@ async def test_queue_next_track_updates_timeline_lifecycle(
         lambda event, data=None: None,
     )
 
+    prev_file = runtime_path(tmp_path, "timeline-prev.wav")
+    prev_file.write_bytes(b"fake wav")
     previous = Track(
+        filepath=str(prev_file),
         title="Old Song",
         status="playing",
         played_at=datetime.now(timezone.utc),
@@ -185,8 +215,10 @@ async def test_queue_next_track_updates_timeline_lifecycle(
     await db_session.commit()
 
     scheduler = make_scheduler(FakePlayout())
+    scheduler._on_air_path = str(prev_file)
 
     await scheduler._queue_next_track(db_session)
+    await air(scheduler, db_session, audio_file)
 
     await db_session.refresh(previous_item)
     await db_session.refresh(next_item)
@@ -242,6 +274,7 @@ async def test_queue_next_track_continues_when_timeline_playing_update_fails(
     scheduler = make_scheduler(fake_playout)
 
     await scheduler._queue_next_track(db_session)
+    await air(scheduler, db_session, audio_file)
 
     await db_session.refresh(track)
     assert track.status == "playing"
@@ -424,8 +457,14 @@ async def test_empty_buffer_queues_fallback_audio(db_session, monkeypatch, tmp_p
 
 @pytest.mark.asyncio
 async def test_manage_talk_playout_marks_previous_segment_played(db_session, tmp_path):
-    """Queueing a talk segment should close any stale playing talk segment."""
-    previous = TalkSegment(segment_type="conversation", status="playing")
+    """Air-time reconcile should close a stale playing talk segment."""
+    prev_file = runtime_path(tmp_path, "talk-prev.wav")
+    prev_file.write_bytes(b"fake wav")
+    previous = TalkSegment(
+        segment_type="conversation",
+        audio_filepath=str(prev_file),
+        status="playing",
+    )
     audio_file = runtime_path(tmp_path, "talk.wav")
     audio_file.write_bytes(b"fake wav")
     next_segment = TalkSegment(
@@ -447,23 +486,33 @@ async def test_manage_talk_playout_marks_previous_segment_played(db_session, tmp
 
     fake_playout = FakePlayout()
     scheduler = make_scheduler(fake_playout)
+    scheduler._on_air_path = str(prev_file)
 
     await scheduler._manage_talk_playout(db_session, show)
+    await db_session.refresh(next_segment)
+    assert next_segment.status == "queued"
+    assert fake_playout.queued_tracks == [str(audio_file)]
 
+    await air(scheduler, db_session, audio_file)
     await db_session.refresh(previous)
     await db_session.refresh(next_segment)
     assert previous.status == "played"
     assert next_segment.status == "playing"
-    assert fake_playout.queued_tracks == [str(audio_file)]
 
 
 @pytest.mark.asyncio
 async def test_manage_talk_playout_updates_timeline_lifecycle(
     db_session, monkeypatch, tmp_path, engine
 ):
-    """Queueing talk should mirror legacy segment state into ProgramItem rows."""
+    """Air-time reconcile should mirror talk state into ProgramItem rows."""
     patch_scheduler_session_factory(monkeypatch, engine)
-    previous = TalkSegment(segment_type="conversation", status="playing")
+    prev_file = runtime_path(tmp_path, "timeline-talk-prev.wav")
+    prev_file.write_bytes(b"fake wav")
+    previous = TalkSegment(
+        segment_type="conversation",
+        audio_filepath=str(prev_file),
+        status="playing",
+    )
     audio_file = runtime_path(tmp_path, "timeline-talk.wav")
     audio_file.write_bytes(b"fake wav")
     next_segment = TalkSegment(
@@ -498,8 +547,10 @@ async def test_manage_talk_playout_updates_timeline_lifecycle(
     await db_session.commit()
 
     scheduler = make_scheduler(FakePlayout())
+    scheduler._on_air_path = str(prev_file)
 
     await scheduler._manage_talk_playout(db_session, show)
+    await air(scheduler, db_session, audio_file)
 
     await db_session.refresh(previous_item)
     await db_session.refresh(next_item)
@@ -547,7 +598,7 @@ async def test_hybrid_playout_queues_talk_after_music(db_session, tmp_path):
     await scheduler._playout_step(db_session)
 
     await db_session.refresh(segment)
-    assert segment.status == "playing"
+    assert segment.status == "queued"
     assert fake_playout.queued_tracks == [str(talk_file)]
     scheduler._manage_playout.assert_not_awaited()
 
@@ -619,7 +670,7 @@ async def test_manage_playout_still_queues_track_when_break_generation_fails(
     await db_session.refresh(track)
     assert fake_playout.queued_breaks == []
     assert fake_playout.queued_tracks == [str(audio_file)]
-    assert track.status == "playing"
+    assert track.status == "queued"
 
 
 @pytest.mark.asyncio
@@ -752,6 +803,11 @@ async def test_manage_playout_marks_queued_dj_break_timeline_playing(
     scheduler._queue_next_track = AsyncMock()
 
     await scheduler._manage_playout(db_session)
+    await db_session.refresh(dj_break)
+    assert dj_break.status == "queued"
+
+    # Air-time reconcile flips the break's ProgramItem to playing.
+    await air(scheduler, db_session, break_file)
 
     await db_session.refresh(item)
     assert item.status == "playing"
@@ -860,3 +916,62 @@ async def test_reap_stuck_generations_fails_old_rows(db_session, monkeypatch):
     # Recent rows are left alone to finish.
     assert fresh_track.status == "generating"
     assert fresh_job.status == "running"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_logs_fallback_at_air_time(db_session, tmp_path):
+    """A fallback file reaching air is logged for compliance by the reconciler."""
+    fallback = tmp_path / "fallback" / "Emergency.wav"
+    fallback.parent.mkdir(parents=True, exist_ok=True)
+    fallback.write_bytes(b"fake wav")
+
+    scheduler = make_scheduler()
+    await air(scheduler, db_session, fallback)
+
+    logs = (await db_session.execute(select(PlayLog))).scalars().all()
+    assert len(logs) == 1
+    assert logs[0].item_type == "fallback"
+    assert logs[0].item_id == 0
+
+
+@pytest.mark.asyncio
+async def test_reconcile_stamps_ended_at_on_previous_playlog(db_session, tmp_path):
+    """When the on-air item changes, the previous playlog gets an ended_at."""
+    a = runtime_path(tmp_path, "a.wav"); a.write_bytes(b"x")
+    b = runtime_path(tmp_path, "b.wav"); b.write_bytes(b"x")
+    track_a = Track(filepath=str(a), title="A", duration=100.0, status="queued")
+    track_b = Track(filepath=str(b), title="B", duration=100.0, status="queued")
+    db_session.add_all([track_a, track_b])
+    await db_session.commit()
+
+    scheduler = make_scheduler()
+    await air(scheduler, db_session, a)   # A goes on air
+    await air(scheduler, db_session, b)   # B takes over -> A closed
+
+    logs = (await db_session.execute(
+        select(PlayLog).order_by(PlayLog.id))).scalars().all()
+    assert [l.item_id for l in logs] == [track_a.id, track_b.id]
+    assert logs[0].ended_at is not None    # A's play was closed
+    assert logs[1].ended_at is None        # B is still on air
+    await db_session.refresh(track_a)
+    await db_session.refresh(track_b)
+    assert track_a.status == "played"
+    assert track_b.status == "playing"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_is_idempotent_for_already_playing_item(db_session, tmp_path):
+    """An already-playing item is not re-logged (survives an app restart)."""
+    f = runtime_path(tmp_path, "resume.wav"); f.write_bytes(b"x")
+    track = Track(filepath=str(f), title="Resume", duration=100.0, status="playing")
+    db_session.add(track)
+    await db_session.commit()
+
+    # Fresh scheduler (as after a restart) sees the same file already on air.
+    scheduler = make_scheduler()
+    await air(scheduler, db_session, f)
+
+    logs = (await db_session.execute(select(PlayLog))).scalars().all()
+    assert logs == []   # no duplicate play logged
+    await db_session.refresh(track)
+    assert track.status == "playing"
