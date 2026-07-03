@@ -1,10 +1,10 @@
 """Talk show configuration and topic management API endpoints."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_serializer, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,7 @@ from server.database import get_session
 from server.models.talk_segment import TalkSegment
 from server.models.talk_show_config import TalkShowConfig
 from server.models.talk_topic import TalkTopic
+from server.utils.timeutils import to_utc_iso
 
 router = APIRouter(prefix="/api/talk", tags=["talk_shows"])
 
@@ -98,6 +99,10 @@ class TalkConfigResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+    @field_serializer("created_at", "updated_at")
+    def _serialize_dt(self, value: Optional[datetime]) -> Optional[str]:
+        return to_utc_iso(value)
+
 
 class TopicCreate(BaseModel):
     """Schema for creating a talk topic."""
@@ -141,6 +146,10 @@ class TopicResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+    @field_serializer("created_at")
+    def _serialize_dt(self, value: Optional[datetime]) -> Optional[str]:
+        return to_utc_iso(value)
+
 
 class SegmentResponse(BaseModel):
     """Schema for talk segment responses."""
@@ -158,6 +167,10 @@ class SegmentResponse(BaseModel):
     played_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("created_at", "played_at")
+    def _serialize_dt(self, value: Optional[datetime]) -> Optional[str]:
+        return to_utc_iso(value)
 
 
 class PreviewRequest(BaseModel):

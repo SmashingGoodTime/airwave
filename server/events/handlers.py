@@ -45,7 +45,7 @@ def _on_track_generated(event: str, data: dict[str, Any]) -> None:
         data.get("track_id"),
         data.get("title", "?"),
         data.get("style", "?"),
-        data.get("duration", 0),
+        data.get("duration") or 0,
     )
 
 
@@ -122,7 +122,7 @@ def _on_break_generated(event: str, data: dict[str, Any]) -> None:
     logger.info(
         "DJ break generated: id=%s duration=%.1fs has_audio=%s",
         data.get("break_id"),
-        data.get("duration", 0),
+        data.get("duration") or 0,
         data.get("has_audio", False),
     )
 
@@ -194,7 +194,7 @@ def _on_talk_segment(event: str, data: dict[str, Any]) -> None:
             "Talk segment generated: topic='%s' type=%s duration=%.1fs",
             data.get("topic", "?"),
             data.get("type", "?"),
-            data.get("duration", 0),
+            data.get("duration") or 0,
         )
     else:
         logger.info("Event: %s | %s", event, data)
@@ -221,7 +221,11 @@ def _on_call_event(event: str, data: dict[str, Any]) -> None:
             "Call %s: session=%s %s",
             action,
             session_id,
-            f"duration={data['duration']:.1f}s" if "duration" in data else "",
+            (
+                f"duration={data['duration']:.1f}s"
+                if data.get("duration") is not None
+                else ""
+            ),
         )
 
 
@@ -232,11 +236,10 @@ def setup_default_handlers(bus: EventBus) -> None:
         bus: The EventBus instance to register handlers on.
     """
     # General logging
-    bus.on("track.generated", _log_event)
     bus.on("track.started", _on_track_started)
     bus.on("track.ended", _log_event)
 
-    # Track-specific
+    # Track-specific (also covers general logging for track.generated)
     bus.on("track.generated", _on_track_generated)
 
     # Buffer alerts

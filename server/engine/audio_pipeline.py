@@ -8,11 +8,13 @@ import logging
 from pathlib import Path
 
 from server.utils.audio import (
+    AudioProcessingError,
     apply_radio_voice_effects,
     convert_to_wav,
     get_duration,
     get_loudness,
     normalize_loudness,
+    normalize_loudness_measured,
     trim_silence,
 )
 
@@ -31,7 +33,9 @@ class AudioPipeline:
     def __init__(self, target_lufs: float = -14.0) -> None:
         self._target_lufs = target_lufs
 
-    async def process(self, filepath: str, voice: bool = False) -> dict:
+    async def process(
+        self, filepath: str, voice: bool = False, delete_source: bool = False
+    ) -> dict:
         """Run the full audio processing pipeline on a file.
 
         Steps:
@@ -45,9 +49,18 @@ class AudioPipeline:
             filepath: Path to the input audio file.
             voice: If True, apply radio DJ voice effects (compression, EQ).
                 Use for DJ break TTS audio, not for music tracks.
+            delete_source: If True, delete the source file after successful
+                processing. Use for intermediate files (raw provider
+                downloads, raw TTS renders) the caller created and no
+                longer needs. The source is never deleted on failure.
 
         Returns:
             A dict with processed_path, duration, and loudness_lufs.
+
+        Raises:
+            AudioProcessingError: If any FFmpeg processing step fails.
+                Callers must mark the item failed rather than using the
+                unprocessed input.
         """
         logger.info("Processing audio: %s (voice=%s)", filepath, voice)
         p = Path(filepath)
@@ -68,15 +81,21 @@ class AudioPipeline:
         else:
             effects_path = trimmed_path
 
-        # Step 4: Normalize loudness
-        norm_path = await normalize_loudness(
+        # Step 4: Normalize loudness (pass 2 already reports the output
+        # integrated loudness, so a separate ebur128 decode is skipped
+        # when that value parses).
+        norm_path, measured_lufs = await normalize_loudness_measured(
             effects_path, target_lufs=self._target_lufs
         )
         logger.debug("Normalized loudness: %s", norm_path)
 
-        # Step 4: Measure results
+        # Step 5: Measure results
         duration = await get_duration(norm_path)
-        loudness = await get_loudness(norm_path)
+        loudness = (
+            measured_lufs
+            if measured_lufs is not None
+            else await get_loudness(norm_path)
+        )
 
         # Clean up intermediate files (keep only the final output)
         final_path = str(p.with_stem(p.stem + "_processed").with_suffix(".wav"))
@@ -94,6 +113,14 @@ class AudioPipeline:
                     tmp_p.unlink()
                 except OSError:
                     pass
+
+        # Optionally remove the caller's source file (success path only)
+        if delete_source and str(p) != final_path and p.exists():
+            try:
+                p.unlink()
+                logger.debug("Deleted source file after processing: %s", filepath)
+            except OSError as exc:
+                logger.warning("Could not delete source %s: %s", filepath, exc)
 
         logger.info(
             "Audio processed: %s -> %s (%.1fs, %.1f LUFS)",

@@ -2,14 +2,15 @@
 
 import logging
 from typing import Optional
-from datetime import datetime, timezone
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.database import get_session_factory
 from server.models.station import Station
 from server.models.show import Show
+from server.utils.timeutils import to_utc_iso, utcnow_naive
 
 router = APIRouter(prefix="/api/streaming", tags=["streaming"])
 logger = logging.getLogger(__name__)
@@ -23,19 +24,60 @@ class StartStreamingRequest(BaseModel):
     broadcast_mode: Optional[str] = None  # "manual" or "scheduled"
 
 
+async def _apply_station_update(
+    session: AsyncSession, body: StartStreamingRequest
+) -> None:
+    """Persist broadcast mode and current show from a start/switch request.
+
+    Args:
+        session: Async database session.
+        body: The start/switch request body.
+
+    Raises:
+        HTTPException: 400 on an invalid broadcast_mode, 404 if the
+            requested show does not exist.
+    """
+    result = await session.execute(
+        select(Station).order_by(Station.id).limit(1)
+    )
+    station = result.scalar_one_or_none()
+    if not station:
+        return
+    if body.broadcast_mode:
+        if body.broadcast_mode not in ("manual", "scheduled"):
+            raise HTTPException(status_code=400, detail="Invalid broadcast_mode")
+        station.broadcast_mode = body.broadcast_mode
+    if body.show_id is not None:
+        if body.show_id != 0:
+            show_result = await session.execute(
+                select(Show).where(Show.id == body.show_id)
+            )
+            if show_result.scalar_one_or_none() is None:
+                raise HTTPException(status_code=404, detail="Show not found")
+            station.current_show_id = body.show_id
+        else:
+            station.current_show_id = None
+        station.current_show_started_at = utcnow_naive()
+    await session.commit()
+
+
 @router.get("/status")
 async def get_streaming_status(request: Request) -> dict:
     """Get the current streaming state and station settings."""
     scheduler = request.app.state.scheduler
-    
+
     factory = get_session_factory()
     async with factory() as session:
-        result = await session.execute(select(Station).limit(1))
+        result = await session.execute(
+            select(Station).order_by(Station.id).limit(1)
+        )
         station = result.scalar_one_or_none()
         
         broadcast_mode = station.broadcast_mode if station else "manual"
         current_show_id = station.current_show_id if station else None
-        current_show_started_at = station.current_show_started_at.isoformat() if station and station.current_show_started_at else None
+        current_show_started_at = (
+            to_utc_iso(station.current_show_started_at) if station else None
+        )
         
         active_show_name = None
         show_type = "music"
@@ -67,17 +109,7 @@ async def start_streaming(request: Request, body: StartStreamingRequest) -> dict
     # Update Station settings in database
     factory = get_session_factory()
     async with factory() as session:
-        result = await session.execute(select(Station).limit(1))
-        station = result.scalar_one_or_none()
-        if station:
-            if body.broadcast_mode:
-                if body.broadcast_mode not in ("manual", "scheduled"):
-                    raise HTTPException(status_code=400, detail="Invalid broadcast_mode")
-                station.broadcast_mode = body.broadcast_mode
-            if body.show_id is not None:
-                station.current_show_id = body.show_id if body.show_id != 0 else None
-                station.current_show_started_at = datetime.now(timezone.utc)
-            await session.commit()
+        await _apply_station_update(session, body)
 
     await scheduler.start_streaming()
     logger.info("Broadcast started via API")
@@ -96,17 +128,7 @@ async def switch_streaming_mode(request: Request, body: StartStreamingRequest) -
     # Update Station settings in database
     factory = get_session_factory()
     async with factory() as session:
-        result = await session.execute(select(Station).limit(1))
-        station = result.scalar_one_or_none()
-        if station:
-            if body.broadcast_mode:
-                if body.broadcast_mode not in ("manual", "scheduled"):
-                    raise HTTPException(status_code=400, detail="Invalid broadcast_mode")
-                station.broadcast_mode = body.broadcast_mode
-            if body.show_id is not None:
-                station.current_show_id = body.show_id if body.show_id != 0 else None
-                station.current_show_started_at = datetime.now(timezone.utc)
-            await session.commit()
+        await _apply_station_update(session, body)
 
     # Tell scheduler to reload current show state immediately
     await scheduler.trigger_show_reload()

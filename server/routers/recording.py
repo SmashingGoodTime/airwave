@@ -52,7 +52,7 @@ async def get_recording_status(
     Returns:
         Recording enabled state, active status, and disk usage.
     """
-    result = await session.execute(select(Station).limit(1))
+    result = await session.execute(select(Station).order_by(Station.id).limit(1))
     station = result.scalar_one_or_none()
 
     enabled = station.recording_enabled if station else False
@@ -92,28 +92,42 @@ async def toggle_recording(
         session: Async database session.
 
     Returns:
-        Updated recording status.
+        Updated recording status with the real recorder state.
+
+    Raises:
+        HTTPException: 404 if no station exists, 502 if Liquidsoap does not
+            acknowledge the command (the DB state is left unchanged).
     """
-    result = await session.execute(select(Station).limit(1))
+    result = await session.execute(select(Station).order_by(Station.id).limit(1))
     station = result.scalar_one_or_none()
     if not station:
         raise HTTPException(status_code=404, detail="Station not configured")
 
-    station.recording_enabled = body.enabled
-    await session.commit()
-
     # Ensure recordings directory exists
     RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Contact playout first; only persist the flag once Liquidsoap accepted
+    # the command, so the DB never claims a recorder state playout rejected.
     playout = _get_playout()
     if body.enabled:
-        await playout.start_recording()
-        logger.info("Stream recording enabled")
+        acknowledged = await playout.start_recording()
     else:
-        await playout.stop_recording()
-        logger.info("Stream recording disabled")
+        acknowledged = await playout.stop_recording()
 
-    return {"enabled": body.enabled, "active": body.enabled}
+    if not acknowledged:
+        raise HTTPException(
+            status_code=502,
+            detail="Liquidsoap did not acknowledge the recording command",
+        )
+
+    station.recording_enabled = body.enabled
+    await session.commit()
+    logger.info(
+        "Stream recording %s", "enabled" if body.enabled else "disabled"
+    )
+
+    is_active = await playout.is_recording()
+    return {"enabled": body.enabled, "active": is_active}
 
 
 @router.put("/settings")
@@ -130,7 +144,7 @@ async def update_recording_settings(
     Returns:
         Updated settings.
     """
-    result = await session.execute(select(Station).limit(1))
+    result = await session.execute(select(Station).order_by(Station.id).limit(1))
     station = result.scalar_one_or_none()
     if not station:
         raise HTTPException(status_code=404, detail="Station not configured")

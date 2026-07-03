@@ -27,6 +27,24 @@ _OPEN = "open"
 _HALF_OPEN = "half_open"
 
 
+class NonRetryableError(RuntimeError):
+    """Provider failure that retrying cannot fix.
+
+    Raised by providers for authentication, payment, and invalid-request
+    failures (e.g. HTTP 400/401/402/403, out-of-credits). ``retry_with_backoff``
+    re-raises it immediately with a single error record instead of burning
+    retries against a call that will never succeed.
+    """
+
+
+class CircuitOpenError(RuntimeError):
+    """Raised when the circuit breaker rejects a call outright.
+
+    Subclasses ``RuntimeError`` so existing callers that catch broad
+    runtime errors keep working.
+    """
+
+
 class RateLimiter:
     """Token-bucket-style rate limiter with backoff and circuit breaker.
 
@@ -66,6 +84,7 @@ class RateLimiter:
         self._circuit_max_cooldown = circuit_max_cooldown
         self._circuit_open_until: float = 0.0
         self._circuit_open_count: int = 0  # how many times circuit has opened
+        self._probe_in_flight: bool = False  # single half-open probe guard
 
     async def acquire(self) -> None:
         """Wait until a call is permitted by the rate limiter.
@@ -73,35 +92,53 @@ class RateLimiter:
         Blocks if the rate limit has been reached or if in a backoff period.
 
         Raises:
-            RuntimeError: If the circuit breaker is open and the cooldown
-                has not yet expired.
+            CircuitOpenError: If the circuit breaker is open and the cooldown
+                has not yet expired, or a half-open probe is already in flight.
         """
         async with self._lock:
-            now = time.monotonic()
-
-            # --- Circuit breaker gate ---
-            if self._circuit_state == _OPEN:
-                if now < self._circuit_open_until:
-                    remaining = self._circuit_open_until - now
-                    raise RuntimeError(
-                        f"{self._name}: circuit breaker OPEN — "
-                        f"rejecting call ({remaining:.0f}s remaining)"
-                    )
-                # Cooldown expired — allow one probe
-                self._circuit_state = _HALF_OPEN
-                logger.info(
-                    "%s circuit breaker: transitioning to HALF_OPEN (probe)",
-                    self._name,
-                )
-
-            # Check backoff
-            if now < self._backoff_until:
-                wait = self._backoff_until - now
-                logger.info(
-                    "%s rate limiter: backing off for %.1fs", self._name, wait
-                )
-                await asyncio.sleep(wait)
+            claimed_probe = False
+            while True:
                 now = time.monotonic()
+
+                # --- Circuit breaker gate ---
+                if self._circuit_state == _OPEN:
+                    if now < self._circuit_open_until:
+                        remaining = self._circuit_open_until - now
+                        raise CircuitOpenError(
+                            f"{self._name}: circuit breaker OPEN — "
+                            f"rejecting call ({remaining:.0f}s remaining)"
+                        )
+                    # Cooldown expired — allow exactly one probe
+                    self._circuit_state = _HALF_OPEN
+                    self._probe_in_flight = True
+                    claimed_probe = True
+                    logger.info(
+                        "%s circuit breaker: transitioning to HALF_OPEN (probe)",
+                        self._name,
+                    )
+                elif self._circuit_state == _HALF_OPEN and not claimed_probe:
+                    if self._probe_in_flight:
+                        raise CircuitOpenError(
+                            f"{self._name}: circuit breaker HALF_OPEN — "
+                            "probe already in flight, rejecting call"
+                        )
+                    self._probe_in_flight = True
+                    claimed_probe = True
+
+                # Check backoff; state may have changed while sleeping
+                # (record_error runs without the lock), so loop and re-check.
+                if now < self._backoff_until:
+                    wait = self._backoff_until - now
+                    logger.info(
+                        "%s rate limiter: backing off for %.1fs",
+                        self._name,
+                        wait,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                break
+
+            now = time.monotonic()
 
             # Enforce minimum interval
             elapsed = now - self._last_call
@@ -144,6 +181,7 @@ class RateLimiter:
         self._circuit_state = _CLOSED
         self._circuit_open_count = 0
         self._circuit_open_until = 0.0
+        self._probe_in_flight = False
 
     def record_error(self) -> None:
         """Record a failed API call, increasing backoff and potentially opening the circuit.
@@ -153,6 +191,7 @@ class RateLimiter:
         threshold is reached the circuit opens with an escalating cooldown.
         """
         self._consecutive_errors += 1
+        self._probe_in_flight = False
 
         # If we were probing in half-open state, re-open immediately
         if self._circuit_state == _HALF_OPEN:
@@ -261,7 +300,14 @@ async def retry_with_backoff(
         The result of func.
 
     Raises:
-        The last exception if all retries are exhausted.
+        CircuitOpenError: If the circuit breaker rejected the call.
+        NonRetryableError: Immediately, without retries, if func raised one.
+        Exception: The last exception if all retries are exhausted.
+
+    Note:
+        This function is the single error-accounting point for the rate
+        limiter: it calls ``record_error``/``record_success`` itself, so
+        ``func`` must only classify and raise — never record.
     """
     last_exc = None
 
@@ -277,39 +323,23 @@ async def retry_with_backoff(
 
             return result
 
-        except RuntimeError as exc:
-            # If the circuit breaker rejected the call, propagate
-            # immediately — retrying would just hit the same gate.
-            if rate_limiter and rate_limiter.circuit_open:
-                logger.info(
-                    "%s skipped — circuit breaker open", operation_name
-                )
-                raise
+        except CircuitOpenError:
+            # The circuit breaker rejected the call before it was made.
+            # Propagate immediately — retrying would just hit the same gate,
+            # and recording an error would punish a call that never ran.
+            logger.info(
+                "%s skipped — circuit breaker rejecting calls", operation_name
+            )
+            raise
 
-            last_exc = exc
+        except NonRetryableError as exc:
+            # Auth/payment/invalid-request failure: retrying cannot fix it.
             if rate_limiter:
                 rate_limiter.record_error()
-
-            if attempt < max_retries:
-                delay = min(base_delay * (2**attempt), max_delay)
-                jitter = random.uniform(0, delay * 0.2)
-                total_delay = delay + jitter
-                logger.warning(
-                    "%s failed (attempt %d/%d): %s. Retrying in %.1fs",
-                    operation_name,
-                    attempt + 1,
-                    max_retries + 1,
-                    exc,
-                    total_delay,
-                )
-                await asyncio.sleep(total_delay)
-            else:
-                logger.error(
-                    "%s failed after %d attempts: %s",
-                    operation_name,
-                    max_retries + 1,
-                    exc,
-                )
+            logger.error(
+                "%s failed with non-retryable error: %s", operation_name, exc
+            )
+            raise
 
         except Exception as exc:
             last_exc = exc

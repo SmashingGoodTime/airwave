@@ -4,7 +4,26 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 
-class MusicProvider(ABC):
+class Provider(ABC):
+    """Common base for all provider types.
+
+    Provides resource-lifecycle hooks shared by every capability so the
+    registry can release provider resources (HTTP connection pools, sockets)
+    when providers are replaced or discarded.
+    """
+
+    async def aclose(self) -> None:
+        """Release any resources held by the provider.
+
+        Called by the registry when a provider instance is being discarded
+        (reinitialization, throwaway health-check providers). The default
+        implementation is a no-op; providers holding HTTP clients or other
+        connections should override it.
+        """
+        return None
+
+
+class MusicProvider(Provider):
     """Abstract base class for music generation providers."""
 
     @abstractmethod
@@ -31,7 +50,7 @@ class MusicProvider(ABC):
         ...
 
 
-class ScriptWriterProvider(ABC):
+class ScriptWriterProvider(Provider):
     """Abstract base class for DJ script generation providers."""
 
     @abstractmethod
@@ -97,7 +116,7 @@ class ScriptWriterProvider(ABC):
         ...
 
 
-class VoiceProvider(ABC):
+class VoiceProvider(Provider):
     """Abstract base class for text-to-speech voice providers."""
 
     @abstractmethod
@@ -132,7 +151,7 @@ class VoiceProvider(ABC):
         ...
 
 
-class TelephonyProvider(ABC):
+class TelephonyProvider(Provider):
     """Abstract base class for telephony providers handling listener call-ins."""
 
     @abstractmethod
@@ -229,7 +248,7 @@ class TelephonyProvider(ABC):
         ...
 
 
-class ConversationAIProvider(ABC):
+class ConversationAIProvider(Provider):
     """Abstract base class for real-time voice AI conversation providers.
 
     Used for live caller interactions where the AI responds to callers

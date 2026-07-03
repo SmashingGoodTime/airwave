@@ -2,10 +2,27 @@ import React, { useState, useEffect } from 'react'
 import { fetchAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement } from '../api'
 import AnnouncementCard from '../components/AnnouncementCard'
 
+/** Convert a UTC ISO datetime string into a value for a datetime-local input (local wall time). */
+function isoToLocalInputValue(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** Convert a datetime-local input value (local wall time) into a UTC ISO string. */
+function localInputValueToIso(value) {
+  if (!value) return null
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? null : d.toISOString()
+}
+
 function Announcements() {
   const [announcements, setAnnouncements] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [modalError, setModalError] = useState(null)
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState(null)
   const [deleteConfirm, setDeleteConfirm] = useState(null)
@@ -35,7 +52,7 @@ function Announcements() {
   function openAdd() {
     setEditing(null)
     setForm({ text: '', priority: 'normal', expires_at: '', max_plays: '' })
-    setError(null)
+    setModalError(null)
     setShowModal(true)
   }
 
@@ -44,10 +61,10 @@ function Announcements() {
     setForm({
       text: ann.text || '',
       priority: ann.priority || 'normal',
-      expires_at: ann.expires_at ? ann.expires_at.slice(0, 16) : '',
+      expires_at: isoToLocalInputValue(ann.expires_at),
       max_plays: ann.max_plays ?? '',
     })
-    setError(null)
+    setModalError(null)
     setShowModal(true)
   }
 
@@ -68,14 +85,14 @@ function Announcements() {
     e.preventDefault()
     const validationError = validateForm()
     if (validationError) {
-      setError(validationError)
+      setModalError(validationError)
       return
     }
 
     const payload = {
       text: form.text,
       priority: form.priority,
-      expires_at: form.expires_at || null,
+      expires_at: localInputValueToIso(form.expires_at),
       max_plays: form.max_plays ? Number(form.max_plays) : null,
     }
 
@@ -88,7 +105,7 @@ function Announcements() {
       setShowModal(false)
       loadAnnouncements()
     } catch (err) {
-      setError(err.message)
+      setModalError(err.message)
     }
   }
 
@@ -96,6 +113,15 @@ function Announcements() {
     try {
       await deleteAnnouncement(id)
       setDeleteConfirm(null)
+      loadAnnouncements()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function handleToggle(ann) {
+    try {
+      await updateAnnouncement(ann.id, { active: !ann.active })
       loadAnnouncements()
     } catch (err) {
       setError(err.message)
@@ -144,7 +170,7 @@ function Announcements() {
                 announcement={ann}
                 onEdit={() => openEdit(ann)}
                 onDelete={() => setDeleteConfirm(ann.id)}
-                onToggle={() => {}}
+                onToggle={() => handleToggle(ann)}
               />
             ))}
           </div>
@@ -161,7 +187,7 @@ function Announcements() {
                     announcement={ann}
                     onEdit={() => openEdit(ann)}
                     onDelete={() => setDeleteConfirm(ann.id)}
-                    onToggle={() => {}}
+                    onToggle={() => handleToggle(ann)}
                   />
                 ))}
               </div>
@@ -174,6 +200,7 @@ function Announcements() {
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <h3>{editing ? 'Edit Announcement' : 'Add Announcement'}</h3>
+            {modalError && <div className="alert alert-error">{modalError}</div>}
             <form onSubmit={handleSubmit}>
               <div className="form-group">
                 <label>Announcement Text</label>

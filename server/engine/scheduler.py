@@ -12,7 +12,7 @@ import logging
 import random
 import shutil
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import select
@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.config import settings
 from server.database import get_session_factory
+from server.engine.audio_pipeline import AudioPipeline
 from server.engine.dj_brain import DJBrain
 from server.engine.music_buffer import MusicBufferManager
 from server.engine.playout import PlayoutInterface
@@ -33,11 +34,13 @@ from server.events.emitter import event_bus
 from server.engine.dj_brain import get_effective_dj_config
 from server.models.dj_break import DJBreak
 from server.models.dj_config import DJConfig
+from server.models.generation_job import GenerationJob
 from server.models.playlog import PlayLog
 from server.models.show import Show
 from server.models.station import Station
 from server.models.talk_segment import TalkSegment
 from server.models.track import Track
+from server.utils.timeutils import utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,9 @@ PLAYOUT_CHECK_INTERVAL = 5
 CLEANUP_INTERVAL = 3600  # 1 hour
 HEALTH_CHECK_INTERVAL = 300  # 5 minutes
 SHOW_CHECK_INTERVAL = 30  # Check for show transitions
+
+# Rows stuck in a transient generation state longer than this are reaped
+STUCK_GENERATION_MAX_AGE = timedelta(hours=2)
 
 
 class MasterScheduler:
@@ -79,6 +85,11 @@ class MasterScheduler:
         # Pre-generated DJ break ready for immediate queueing
         self._pending_break: DJBreak | None = None
         self._pending_break_task: asyncio.Task | None = None
+        # True while a startup/show-transition intro is being generated —
+        # the playout loop must not queue anything ahead of the intro.
+        self._intro_pending = False
+        # Single writer for show transitions (see _show_transition_step)
+        self._show_lock = asyncio.Lock()
 
     async def start(self) -> None:
         """Start all scheduler loops as background tasks."""
@@ -99,13 +110,19 @@ class MasterScheduler:
                 parents=True, exist_ok=True
             )
 
-        # Auto-start recording if enabled in station config
-        await self._restore_recording_state()
-
         # NOTE: No auto-start of streaming — user must click Start in the UI.
         # _queue_startup_intro() is called from start_streaming() instead.
 
         self._tasks = [
+            # One-shot startup tasks (must not block scheduler start)
+            asyncio.create_task(
+                self._restore_recording_state(),
+                name="restore_recording_state",
+            ),
+            asyncio.create_task(
+                self._normalize_fallback_files(),
+                name="normalize_fallback",
+            ),
             asyncio.create_task(
                 self._safe_loop(
                     self._buffer_loop, "buffer_loop", BUFFER_CHECK_INTERVAL
@@ -181,19 +198,28 @@ class MasterScheduler:
         self._streaming_show_type = show_type
         self._current_show_id = active_show.id if active_show else None
         self._current_show_type = active_show.show_type if active_show else None
+        # Block the playout loop from queueing anything until the startup
+        # intro is queued (or intro generation fails/is skipped). Set
+        # BEFORE _streaming so no playout tick can slip in between.
+        self._intro_pending = True
         self._streaming = True
         logger.info("Streaming started (show_type=%s)", show_type)
 
-        # Wait for Liquidsoap telnet to be ready before queueing anything
-        ready = await self._playout.wait_until_ready(timeout=30.0, interval=1.0)
-        if not ready:
-            logger.warning(
-                "Liquidsoap not ready after timeout — will retry queueing "
-                "in the next scheduler tick"
+        try:
+            # Wait for Liquidsoap telnet to be ready before queueing anything
+            ready = await self._playout.wait_until_ready(
+                timeout=30.0, interval=1.0
             )
+            if not ready:
+                logger.warning(
+                    "Liquidsoap not ready after timeout — will retry queueing "
+                    "in the next scheduler tick"
+                )
 
-        # Generate and queue a startup intro
-        await self._queue_startup_intro()
+            # Generate and queue a startup intro
+            await self._queue_startup_intro()
+        finally:
+            self._intro_pending = False
 
         event_bus.emit("stream.started", {"show_type": show_type})
 
@@ -273,20 +299,91 @@ class MasterScheduler:
             await asyncio.sleep(sleep_time)
 
     async def _restore_recording_state(self) -> None:
-        """Start the Liquidsoap recorder if recording was enabled in config."""
+        """Sync the Liquidsoap recorder with the configured recording state.
+
+        Starts the recorder when recording is enabled in config, and stops
+        it when disabled (so a Liquidsoap restart with stale state is
+        brought back in line). Waits for Liquidsoap to accept commands
+        first — this runs as a background task so it never blocks startup.
+        """
         try:
             factory = get_session_factory()
             async with factory() as session:
-                result = await session.execute(select(Station).limit(1))
+                result = await session.execute(
+                    select(Station).order_by(Station.id).limit(1)
+                )
                 station = result.scalar_one_or_none()
-                if station and station.recording_enabled:
-                    started = await self._playout.start_recording()
-                    if started:
-                        logger.info("Recording auto-started (was enabled in config)")
-                    else:
-                        logger.warning("Failed to auto-start recording")
+            if station is None:
+                return
+
+            ready = await self._playout.wait_until_ready(
+                timeout=30.0, interval=1.0
+            )
+            if not ready:
+                logger.warning(
+                    "Liquidsoap not ready — could not sync recording state"
+                )
+                return
+
+            if station.recording_enabled:
+                started = await self._playout.start_recording()
+                if started:
+                    logger.info("Recording auto-started (was enabled in config)")
+                else:
+                    logger.warning("Failed to auto-start recording")
+            else:
+                await self._playout.stop_recording()
+                logger.info("Recorder confirmed stopped (disabled in config)")
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             logger.debug("Could not restore recording state: %s", exc)
+
+    async def _normalize_fallback_files(self) -> None:
+        """Normalize fallback audio into a cache directory (best-effort).
+
+        Fallback files are user-supplied and may not meet the station's
+        loudness/format standards. This one-shot startup task processes
+        them into ``fallback/normalized/`` so dead-air playback uses
+        broadcast-ready audio. Files that fail to process are skipped;
+        startup is never blocked on this.
+        """
+        try:
+            if not self._fallback_dir.exists():
+                return
+            normalized_dir = self._fallback_dir / "normalized"
+            normalized_dir.mkdir(parents=True, exist_ok=True)
+
+            pipeline = AudioPipeline()
+            fallback_files = list(self._fallback_dir.glob("*.mp3")) + list(
+                self._fallback_dir.glob("*.wav")
+            )
+            for source in fallback_files:
+                target = normalized_dir / f"{source.stem}.wav"
+                if target.exists():
+                    continue
+                try:
+                    processed = await pipeline.process(str(source))
+                    await asyncio.to_thread(
+                        shutil.move, processed["processed_path"], str(target)
+                    )
+                    logger.info(
+                        "Normalized fallback file: %s -> %s",
+                        source.name,
+                        target,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "Could not normalize fallback file %s: %s",
+                        source.name,
+                        exc,
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Fallback normalization task failed: %s", exc)
 
     async def _queue_startup_intro(self) -> None:
         """Generate and queue a DJ show intro when the station first starts.
@@ -307,10 +404,17 @@ class MasterScheduler:
                 )
 
                 if dj_break and dj_break.audio_filepath:
+                    intro_title = (
+                        f"Show Intro — {active_show.name}"
+                        if active_show
+                        else "Show Intro"
+                    )
                     queued = await self._playout.queue_break(
-                        dj_break.audio_filepath
+                        dj_break.audio_filepath, title=intro_title
                     )
                     if queued:
+                        self._dj_brain.reset_break_counter()
+                        dj_break.status = "playing"
                         await self._log_play(
                             session,
                             "dj_break",
@@ -395,7 +499,9 @@ class MasterScheduler:
         Args:
             session: Async database session.
         """
-        if not self._streaming:
+        if not self._streaming or self._intro_pending:
+            # While an intro is being generated/queued, nothing may be
+            # queued ahead of it.
             return
 
         active_show = await self._get_active_show(session)
@@ -418,7 +524,13 @@ class MasterScheduler:
             await self._manage_playout(session)
 
     async def _show_transition_step(self, session: AsyncSession) -> None:
-        """Detect show transitions and emit events.
+        """Detect show transitions, persist them, and emit events.
+
+        This is the ONLY place that writes show-transition state
+        (``station.current_show_id`` / ``current_show_started_at``) and
+        emits ``show.ended``/``show.started`` — other callers of
+        :meth:`_get_active_show` are read-only, so each boundary produces
+        exactly one pair of events.
 
         Args:
             session: Async database session.
@@ -426,7 +538,17 @@ class MasterScheduler:
         if not self._streaming:
             return
 
+        async with self._show_lock:
+            await self._show_transition_locked(session)
+
+    async def _show_transition_locked(self, session: AsyncSession) -> None:
+        """Perform the show transition while holding the show lock.
+
+        Args:
+            session: Async database session.
+        """
         active_show = await self._get_active_show(session)
+        await self._persist_show_transition(session, active_show)
         new_show_id = active_show.id if active_show else None
         new_show_type = active_show.show_type if active_show else None
 
@@ -476,16 +598,22 @@ class MasterScheduler:
                     active_show.show_type,
                 )
 
-                # Generate and queue a DJ intro for the new show
+                # Generate and queue a DJ intro for the new show. The
+                # playout loop is held off so no track can jump ahead of
+                # the transition intro.
+                self._intro_pending = True
                 try:
                     intro = await self._dj_brain.generate_show_intro(
                         session, show=active_show, show_id=active_show.id
                     )
                     if intro and intro.audio_filepath:
                         queued = await self._playout.queue_break(
-                            intro.audio_filepath
+                            intro.audio_filepath,
+                            title=f"Show Intro — {active_show.name}",
                         )
                         if queued:
+                            self._dj_brain.reset_break_counter()
+                            intro.status = "playing"
                             await self._log_play(
                                 session,
                                 "dj_break",
@@ -518,6 +646,8 @@ class MasterScheduler:
                         active_show.name,
                         exc,
                     )
+                finally:
+                    self._intro_pending = False
 
             self._current_show_id = new_show_id
             self._current_show_type = new_show_type
@@ -565,16 +695,36 @@ class MasterScheduler:
                     session, show_id, queue_length
                 )
                 if dj_break and dj_break.audio_filepath:
+                    break_title = (
+                        f"{dj_config.dj_name} — DJ Break"
+                        if dj_config and dj_config.dj_name
+                        else "DJ Break"
+                    )
                     queued = await self._playout.queue_break(
-                        dj_break.audio_filepath
+                        dj_break.audio_filepath, title=break_title
                     )
                     if queued:
+                        # The break counter resets ONLY here, after the
+                        # break has actually been pushed to playout.
+                        self._dj_brain.reset_break_counter()
+                        closed_breaks = await self._close_playing_breaks(
+                            session
+                        )
+                        dj_break.status = "playing"
                         await self._log_play(
                             session,
                             "dj_break",
                             dj_break.id,
                             dj_break.duration,
                         )
+                        for closed_id in closed_breaks:
+                            await self._record_timeline_update(
+                                lambda timeline_session, closed_id=closed_id: mark_source_played(
+                                    timeline_session,
+                                    "dj_breaks",
+                                    closed_id,
+                                )
+                            )
                         await self._record_timeline_update(
                             lambda timeline_session: mark_source_playing(
                                 timeline_session,
@@ -595,6 +745,13 @@ class MasterScheduler:
                             },
                         )
                         return
+                    # Queue push failed — keep the break for the next tick
+                    # instead of silently dropping it.
+                    logger.warning(
+                        "Failed to queue DJ break %d — retrying next tick",
+                        dj_break.id,
+                    )
+                    self._pending_break = dj_break
             except Exception as exc:
                 logger.error("DJ break generation/queueing failed: %s", exc)
                 # Don't let break failure prevent track queueing
@@ -655,7 +812,6 @@ class MasterScheduler:
                 "Using pre-generated break id=%d (no generation delay)",
                 dj_break.id,
             )
-            self._dj_brain.reset_break_counter()
             return dj_break
 
         # Fallback: generate synchronously (old behavior, with offset fix)
@@ -690,11 +846,41 @@ class MasterScheduler:
         )
         logger.info("Started pre-generating DJ break in background")
 
+    async def _close_playing_breaks(self, session: AsyncSession) -> list[int]:
+        """Mark any still-playing DJ breaks as played.
+
+        Mirrors the track/talk-segment lifecycle: when the next item is
+        queued, whatever break was playing is over. The caller is
+        responsible for committing the session and recording the returned
+        IDs into the timeline via ``mark_source_played``.
+
+        Args:
+            session: Async database session.
+
+        Returns:
+            IDs of the DJ breaks that were closed.
+        """
+        result = await session.execute(
+            select(DJBreak).where(DJBreak.status == "playing")
+        )
+        closed: list[int] = []
+        for dj_break in result.scalars().all():
+            dj_break.status = "played"
+            if dj_break.played_at is None:
+                dj_break.played_at = utcnow_naive()
+            closed.append(dj_break.id)
+            event_bus.emit("break.ended", {"break_id": dj_break.id})
+        return closed
+
     async def _get_active_show(self, session: AsyncSession) -> Show | None:
         """Find the currently active show based on broadcast mode and timers.
 
-        If in manual mode, returns the current_show_id config.
-        If in scheduled mode, handles transition timers and returns the current queue block.
+        Read-only: never writes station state or emits events, so it is
+        safe to call concurrently from the buffer/playout loops. In
+        scheduled mode, when the current show's timer has lapsed this
+        computes the *next* show in the queue without persisting the
+        rotation — only :meth:`_show_transition_step` (the single writer)
+        commits transitions.
 
         Args:
             session: Async database session.
@@ -703,7 +889,9 @@ class MasterScheduler:
             The active Show, or None.
         """
         # Get Station config
-        result = await session.execute(select(Station).limit(1))
+        result = await session.execute(
+            select(Station).order_by(Station.id).limit(1)
+        )
         station = result.scalar_one_or_none()
         if not station:
             return None
@@ -726,57 +914,97 @@ class MasterScheduler:
             )
             current_show = result.scalar_one_or_none()
 
-        now = datetime.now(timezone.utc)
-        should_transition = False
+        if (
+            current_show
+            and not self._force_show_reload
+            and not self._show_timer_expired(station, current_show)
+        ):
+            return current_show
 
-        if not current_show or not station.current_show_started_at or getattr(self, "_force_show_reload", False):
-            should_transition = True
-        else:
-            elapsed = (now - station.current_show_started_at.replace(tzinfo=timezone.utc)).total_seconds()
-            duration_secs = current_show.duration_minutes * 60
-            if elapsed >= duration_secs:
-                should_transition = True
+        # A transition is due — compute (do not persist) the next show
+        result = await session.execute(
+            select(Show)
+            .where(Show.active.is_(True))
+            .order_by(Show.queue_order.asc(), Show.id.asc())
+        )
+        active_shows = list(result.scalars().all())
 
-        if should_transition:
+        if not active_shows:
+            return None
+
+        next_show = active_shows[0]
+        if current_show:
+            try:
+                current_idx = [s.id for s in active_shows].index(current_show.id)
+                next_idx = (current_idx + 1) % len(active_shows)
+                next_show = active_shows[next_idx]
+            except ValueError:
+                pass
+
+        return next_show
+
+    @staticmethod
+    def _show_timer_expired(station: Station, current_show: Show) -> bool:
+        """Check whether the scheduled show's playtime window has lapsed.
+
+        Args:
+            station: The station row holding the show timer.
+            current_show: The currently scheduled show.
+
+        Returns:
+            True if the show has run past its duration (or has no start
+            timestamp at all).
+        """
+        started_at = station.current_show_started_at
+        if not started_at:
+            return True
+        # SQLite round-trips naive UTC; same-session objects may be aware
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
+        return elapsed >= current_show.duration_minutes * 60
+
+    async def _persist_show_transition(
+        self, session: AsyncSession, active_show: Show | None
+    ) -> None:
+        """Persist a scheduled-mode show rotation (single writer).
+
+        Called only from :meth:`_show_transition_step` while holding the
+        show lock. Updates ``station.current_show_id`` and restarts the
+        show timer when a transition is due.
+
+        Args:
+            session: Async database session.
+            active_show: The show computed by :meth:`_get_active_show`.
+        """
+        result = await session.execute(
+            select(Station).order_by(Station.id).limit(1)
+        )
+        station = result.scalar_one_or_none()
+        if not station or station.broadcast_mode != "scheduled":
             self._force_show_reload = False
-            # Transition to the next active show in the queue
-            result = await session.execute(
-                select(Show)
-                .where(Show.active.is_(True))
-                .order_by(Show.queue_order.asc(), Show.id.asc())
+            return
+
+        new_id = active_show.id if active_show else None
+        restamp = False
+        if station.current_show_id != new_id or self._force_show_reload:
+            restamp = True
+        elif active_show is not None:
+            # Same show rotating onto itself (single-show queue) — restart
+            # the timer once it lapses.
+            restamp = self._show_timer_expired(station, active_show)
+
+        if restamp:
+            station.current_show_id = new_id
+            station.current_show_started_at = (
+                utcnow_naive() if new_id is not None else None
             )
-            active_shows = list(result.scalars().all())
-
-            if not active_shows:
-                station.current_show_id = None
-                station.current_show_started_at = None
-                await session.commit()
-                return None
-
-            # Find next show in queue
-            next_show = active_shows[0]
-            if current_show:
-                try:
-                    current_idx = [s.id for s in active_shows].index(current_show.id)
-                    next_idx = (current_idx + 1) % len(active_shows)
-                    next_show = active_shows[next_idx]
-                except ValueError:
-                    pass
-
-            station.current_show_id = next_show.id
-            station.current_show_started_at = now
             await session.commit()
-
-            # Emit show transition event
-            event_bus.emit("show.started", {
-                "show_id": next_show.id,
-                "show_name": next_show.name,
-                "show_type": next_show.show_type,
-            })
-            logger.info("Scheduler transitioned to scheduled show: %s", next_show.name)
-            return next_show
-
-        return current_show
+            logger.info(
+                "Scheduler transitioned to scheduled show: %s",
+                active_show.name if active_show else "(none)",
+            )
+        self._force_show_reload = False
 
     async def _get_talk_show_fallback(
         self, session: AsyncSession
@@ -895,7 +1123,7 @@ class MasterScheduler:
         if segment is None:
             # No segments ready — try fallback
             if fallback_to_dead_air:
-                await self._handle_dead_air()
+                await self._handle_dead_air(session)
             return False
 
         if not segment.audio_filepath or not Path(segment.audio_filepath).exists():
@@ -915,7 +1143,11 @@ class MasterScheduler:
             )
             return False
 
-        queued = await self._playout.queue_track(segment.audio_filepath)
+        queued = await self._playout.queue_track(
+            segment.audio_filepath,
+            title=f"{show.name} - Talk Segment",
+            artist=show.name,
+        )
         if queued:
             prev_result = await session.execute(
                 select(TalkSegment).where(TalkSegment.status == "playing")
@@ -927,6 +1159,7 @@ class MasterScheduler:
                     "talk_segment.ended",
                     {"segment_id": prev_segment.id},
                 )
+            closed_breaks = await self._close_playing_breaks(session)
 
             segment.status = "playing"
             segment.played_at = datetime.now(timezone.utc)
@@ -940,17 +1173,20 @@ class MasterScheduler:
                         prev_segment_id,
                     )
                 )
+            for closed_id in closed_breaks:
+                await self._record_timeline_update(
+                    lambda timeline_session, closed_id=closed_id: mark_source_played(
+                        timeline_session,
+                        "dj_breaks",
+                        closed_id,
+                    )
+                )
             await self._record_timeline_update(
                 lambda timeline_session: mark_source_playing(
                     timeline_session,
                     "talk_segments",
                     segment.id,
                 )
-            )
-
-            await self._playout.update_metadata(
-                title=f"{show.name} - Talk Segment",
-                artist=show.name,
             )
 
             await self._log_play(
@@ -1025,7 +1261,7 @@ class MasterScheduler:
         track = result.scalar_one_or_none()
 
         if track is None:
-            await self._handle_dead_air()
+            await self._handle_dead_air(session)
             return
 
         if not track.filepath or not Path(track.filepath).exists():
@@ -1044,7 +1280,17 @@ class MasterScheduler:
             )
             return
 
-        queued = await self._playout.queue_track(track.filepath)
+        # Resolve stream metadata (show-aware) before queueing — metadata
+        # is annotated into the Liquidsoap request at queue time.
+        active_show = await self._get_active_show(session)
+        cfg = await get_effective_dj_config(
+            session, show_id=active_show.id if active_show else None
+        )
+        queued = await self._playout.queue_track(
+            track.filepath,
+            title=track.title or "Unknown Track",
+            artist=cfg.station_name if cfg else "AI Radio",
+        )
         if queued:
             # Mark any previously-playing tracks as played
             prev_result = await session.execute(
@@ -1057,6 +1303,7 @@ class MasterScheduler:
                     "track.ended",
                     {"track_id": prev_track.id, "title": prev_track.title},
                 )
+            closed_breaks = await self._close_playing_breaks(session)
 
             track.status = "playing"
             track.played_at = datetime.now(timezone.utc)
@@ -1071,6 +1318,14 @@ class MasterScheduler:
                         prev_track_id,
                     ),
                 )
+            for closed_id in closed_breaks:
+                await self._record_timeline_update(
+                    lambda timeline_session, closed_id=closed_id: mark_source_played(
+                        timeline_session,
+                        "dj_breaks",
+                        closed_id,
+                    )
+                )
             track_id = track.id
             await self._record_timeline_update(
                 lambda timeline_session: mark_source_playing(
@@ -1078,16 +1333,6 @@ class MasterScheduler:
                     "tracks",
                     track_id,
                 ),
-            )
-
-            # Update stream metadata (show-aware)
-            active_show = await self._get_active_show(session)
-            cfg = await get_effective_dj_config(
-                session, show_id=active_show.id if active_show else None
-            )
-            await self._playout.update_metadata(
-                title=track.title or "Unknown Track",
-                artist=cfg.station_name if cfg else "AI Radio",
             )
 
             self._dj_brain.track_played()
@@ -1117,8 +1362,13 @@ class MasterScheduler:
                 },
             )
 
-    async def _handle_dead_air(self) -> None:
-        """Activate fallback audio when no tracks are available."""
+    async def _handle_dead_air(self, session: AsyncSession) -> None:
+        """Activate fallback audio when no tracks are available.
+
+        Args:
+            session: Async database session, used to record the fallback
+                play in the compliance log.
+        """
         event_bus.emit("buffer.critical", {"ready": 0, "target": 0})
 
         if not self._fallback_dir.exists():
@@ -1139,7 +1389,22 @@ class MasterScheduler:
         logger.warning(
             "Dead air protection: queueing fallback %s", fallback.name
         )
-        await self._playout.queue_track(str(fallback))
+        queued = await self._playout.queue_track(
+            str(fallback), title=fallback.stem, artist="AI Radio (fallback)"
+        )
+        # Log fallback airtime for compliance — stations must account for
+        # everything that goes to air, including emergency fallback.
+        if queued:
+            try:
+                await self._log_play(
+                    session,
+                    "fallback",
+                    0,
+                    None,
+                    {"filename": fallback.name, "filepath": str(fallback)},
+                )
+            except Exception as exc:  # never let logging break dead-air recovery
+                logger.warning("Could not log fallback play: %s", exc)
 
     async def _log_play(
         self,
@@ -1260,8 +1525,63 @@ class MasterScheduler:
 
         await session.commit()
 
+        # Reap rows stuck mid-generation (e.g. a crash or provider hang left
+        # them in a transient state with no worker to finish them).
+        await self._reap_stuck_generations(session)
+
         # Clean up old recordings past retention
         await self._cleanup_recordings(session)
+
+    async def _reap_stuck_generations(self, session: AsyncSession) -> None:
+        """Fail rows stuck in a transient generation state past the max age.
+
+        Without this, a process crash or provider hang mid-generation leaves
+        tracks/breaks/segments in ``generating`` (and jobs in ``running``)
+        forever — they never become ``ready`` and the dashboard shows phantom
+        in-flight work. Anything older than :data:`STUCK_GENERATION_MAX_AGE`
+        is marked ``failed``.
+
+        Args:
+            session: Async database session.
+        """
+        cutoff = utcnow_naive() - STUCK_GENERATION_MAX_AGE
+        reaped = 0
+
+        # (model, timestamp column) for the transient content states.
+        for model in (Track, DJBreak, TalkSegment):
+            result = await session.execute(
+                select(model).where(
+                    model.status == "generating",
+                    model.created_at < cutoff,
+                )
+            )
+            for row in result.scalars().all():
+                row.status = "failed"
+                reaped += 1
+
+        # Generation jobs use their own running state / attempt bookkeeping.
+        job_result = await session.execute(
+            select(GenerationJob).where(
+                GenerationJob.status == "running",
+                GenerationJob.created_at < cutoff,
+            )
+        )
+        for job in job_result.scalars().all():
+            job.status = "failed"
+            job.error_message = (
+                job.error_message
+                or "Reaped: stuck in 'running' past the max generation age."
+            )
+            job.finished_at = utcnow_naive()
+            reaped += 1
+
+        if reaped:
+            logger.warning(
+                "Reaped %d rows stuck mid-generation past %s",
+                reaped,
+                STUCK_GENERATION_MAX_AGE,
+            )
+            await session.commit()
 
     async def _cleanup_recordings(self, session: AsyncSession) -> None:
         """Delete recording files older than the configured retention period.

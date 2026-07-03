@@ -89,6 +89,25 @@ def _api_key_provider(env_name: str, *, include_audio_dir: bool) -> ProviderFact
     return _factory
 
 
+def _sanitize_error(exc: Exception) -> str:
+    """Build an error string safe to log and return to browsers.
+
+    Never includes URLs or query strings, which can carry API keys
+    (e.g. httpx exception messages embed the full request URL).
+
+    Args:
+        exc: The exception to describe.
+
+    Returns:
+        Exception class name plus its message when the message is safe,
+        otherwise the class name alone.
+    """
+    message = str(exc)
+    if not message or "://" in message or "key=" in message.lower():
+        return type(exc).__name__
+    return f"{type(exc).__name__}: {message}"
+
+
 def _suno_factory(ctx: ProviderFactoryContext) -> ProviderInstance:
     """Build a Suno music provider."""
     kwargs = {
@@ -96,6 +115,15 @@ def _suno_factory(ctx: ProviderFactoryContext) -> ProviderInstance:
         "audio_dir": ctx.audio_dir,
     }
     model = ctx.value("SUNO_MODEL")
+    if model:
+        kwargs["model"] = model
+    return ctx.provider_cls(**kwargs)
+
+
+def _gemini_factory(ctx: ProviderFactoryContext) -> ProviderInstance:
+    """Build a Gemini scriptwriter provider with a configurable model."""
+    kwargs = {"api_key": ctx.value("GOOGLE_API_KEY")}
+    model = ctx.value("GEMINI_MODEL")
     if model:
         kwargs["model"] = model
     return ctx.provider_cls(**kwargs)
@@ -128,7 +156,7 @@ BUILTIN_PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         module_path="server.providers.scriptwriter.google",
         class_name="GeminiScriptWriterProvider",
         required_env=("GOOGLE_API_KEY",),
-        factory=_api_key_provider("GOOGLE_API_KEY", include_audio_dir=False),
+        factory=_gemini_factory,
     ),
     ProviderDefinition(
         key="fish_audio",
@@ -235,7 +263,7 @@ class ProviderRegistry:
         unconfigured, and failed providers are logged without stopping startup.
         """
         logger.info("Initializing provider registry...")
-        self._reset_providers()
+        await self._reset_providers()
 
         for definition in self._definitions:
             if not definition.is_configured(config):
@@ -287,6 +315,7 @@ class ProviderRegistry:
             if not definition.is_configured(config):
                 continue
 
+            provider: Optional[ProviderInstance] = None
             try:
                 provider = definition.create(config)
                 healthy = await provider.check_status()
@@ -295,14 +324,19 @@ class ProviderRegistry:
                     "Candidate health check failed for %s provider %s: %s",
                     capability,
                     definition.display_name,
-                    exc,
+                    _sanitize_error(exc),
                 )
                 return {
                     "provider": definition.key,
                     "healthy": False,
                     "status": "error",
-                    "error": str(exc),
+                    "error": _sanitize_error(exc),
                 }
+            finally:
+                # The throwaway candidate provider is never registered, so
+                # close it here or its connection pool leaks.
+                if provider is not None:
+                    await self._close_provider(provider)
 
             return {
                 "provider": definition.key,
@@ -318,8 +352,27 @@ class ProviderRegistry:
             "error": "Provider is not configured",
         }
 
-    def _reset_providers(self) -> None:
-        """Clear configured provider instances before reinitialization."""
+    async def _reset_providers(self) -> None:
+        """Close and clear configured provider instances before reinitialization.
+
+        Old instances are explicitly closed so their HTTP connection pools
+        are released instead of leaking when providers are replaced.
+        """
+        stale = {
+            id(provider): provider
+            for provider in (
+                self._music,
+                self._scriptwriter,
+                self._voice,
+                self._telephony,
+                self._conversation,
+                *self._voice_providers.values(),
+            )
+            if provider is not None
+        }
+        for provider in stale.values():
+            await self._close_provider(provider)
+
         self._music = None
         self._scriptwriter = None
         self._voice = None
@@ -329,6 +382,19 @@ class ProviderRegistry:
         self._provider_keys = {}
         self._provider_names = {}
         self._clear_health_cache()
+
+    @staticmethod
+    async def _close_provider(provider: object) -> None:
+        """Best-effort close of a provider's resources."""
+        closer = getattr(provider, "aclose", None)
+        if closer is None:
+            return
+        try:
+            await closer()
+        except Exception as exc:
+            logger.warning(
+                "Error closing %s: %s", type(provider).__name__, exc
+            )
 
     def _clear_health_cache(self) -> None:
         """Invalidate cached health results."""
@@ -443,12 +509,16 @@ class ProviderRegistry:
                         "circuit": circuit,
                     }
                 except Exception as exc:
-                    logger.warning("Health check failed for %s: %s", name, exc)
+                    logger.warning(
+                        "Health check failed for %s: %s",
+                        name,
+                        _sanitize_error(exc),
+                    )
                     results[name] = {
                         "status": "error",
                         "healthy": False,
                         "provider": key,
-                        "error": str(exc),
+                        "error": _sanitize_error(exc),
                     }
 
         self._health_cache = results

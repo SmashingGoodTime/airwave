@@ -120,11 +120,21 @@ function Setup({ onComplete }) {
   async function handleFinish() {
     setSubmitting(true)
     setError(null)
+    const payload = {
+      ...data,
+      styles: data.styles.filter(s => s.name.trim() && s.prompt.trim()),
+    }
     try {
-      await completeSetup(data)
+      await completeSetup(payload)
       onComplete()
       navigate('/dashboard')
     } catch (err) {
+      if (err.status === 409) {
+        // Setup already completed elsewhere — treat as done.
+        onComplete()
+        navigate('/dashboard')
+        return
+      }
       setError(err.message)
     } finally {
       setSubmitting(false)

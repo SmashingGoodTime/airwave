@@ -17,6 +17,9 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "sqlite+aiosqlite:///./radio.db"
     GOOGLE_API_KEY: str = ""
+    # Gemini model id used by the scriptwriter provider. Override in .env
+    # if this default is unavailable on your API tier.
+    GEMINI_MODEL: str = "gemini-3.5-flash"
     SUNO_API_KEY: str = ""
     SUNO_MODEL: str = "V5_5"
     FISH_AUDIO_API_KEY: str = ""

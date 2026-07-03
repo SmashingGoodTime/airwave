@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { fetchPlayLog, exportPlayLog } from '../api'
 
 function PlayLog() {
@@ -11,21 +11,25 @@ function PlayLog() {
   const [exporting, setExporting] = useState(false)
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
+  const requestIdRef = useRef(0)
   const perPage = 20
 
   async function loadLog(p, start, end) {
+    const requestId = ++requestIdRef.current
     setLoading(true)
     try {
       const data = await fetchPlayLog(p, perPage, start || undefined, end || undefined)
+      if (requestId !== requestIdRef.current) return // stale response
       setEntries(Array.isArray(data) ? data : data.items || data.entries || [])
       const totalCount = data.total || 0
       setTotal(totalCount)
       setTotalPages(data.total_pages || data.pages || Math.ceil(totalCount / perPage) || 1)
       setError(null)
     } catch (err) {
+      if (requestId !== requestIdRef.current) return
       setError(err.message)
     } finally {
-      setLoading(false)
+      if (requestId === requestIdRef.current) setLoading(false)
     }
   }
 
@@ -33,7 +37,13 @@ function PlayLog() {
     loadLog(page, startDate, endDate)
   }, [page, startDate, endDate])
 
-  function handleFilter() {
+  function handleStartDateChange(value) {
+    setStartDate(value)
+    setPage(1)
+  }
+
+  function handleEndDateChange(value) {
+    setEndDate(value)
     setPage(1)
   }
 
@@ -93,7 +103,7 @@ function PlayLog() {
             <input
               type="date"
               value={startDate}
-              onChange={e => setStartDate(e.target.value)}
+              onChange={e => handleStartDateChange(e.target.value)}
             />
           </div>
           <div className="form-group" style={{ marginBottom: 0 }}>
@@ -101,13 +111,10 @@ function PlayLog() {
             <input
               type="date"
               value={endDate}
-              onChange={e => setEndDate(e.target.value)}
+              onChange={e => handleEndDateChange(e.target.value)}
             />
           </div>
           <div className="filter-actions">
-            <button className="btn btn-primary btn-sm" onClick={handleFilter}>
-              Filter
-            </button>
             {(startDate || endDate) && (
               <button className="btn btn-sm" onClick={handleClearFilter}>
                 Clear

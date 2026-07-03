@@ -8,7 +8,11 @@ from typing import Optional
 import httpx
 
 from server.providers.base import ScriptWriterProvider
-from server.utils.rate_limiter import RateLimiter, retry_with_backoff
+from server.utils.rate_limiter import (
+    NonRetryableError,
+    RateLimiter,
+    retry_with_backoff,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +50,10 @@ def _clean_for_tts(text: str, truncated: bool = False) -> str:
     # Collapse multiple spaces/newlines
     text = re.sub(r'\s+', ' ', text).strip()
 
-    if truncated:
-        # The LLM was cut off — remove the last (likely incomplete) sentence.
+    # Only trim when the text demonstrably ends mid-sentence: a response
+    # that hit the token limit exactly at a sentence boundary is complete.
+    if truncated and text and not text.endswith((".", "!", "?")):
+        # The LLM was cut off — remove the last (incomplete) sentence.
         # Find the last sentence-ending punctuation and cut there.
         match = re.match(r'^(.*[.!?])\s+\S', text, re.DOTALL)
         if match:
@@ -94,7 +100,13 @@ class GeminiScriptWriterProvider(ScriptWriterProvider):
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 base_url=GEMINI_API_BASE,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    # The key rides a header, never the URL, so it cannot
+                    # leak through exception messages, logs, or health
+                    # check error strings.
+                    "x-goog-api-key": self._api_key,
+                },
                 timeout=60.0,
             )
         return self._client
@@ -234,12 +246,11 @@ Rules:
 
         try:
             logger.info("Generating %s talk segment via Gemini", segment_type)
-            url = f"/models/{self._model}:generateContent?key={self._api_key}"
+            url = f"/models/{self._model}:generateContent"
             response = await client.post(url, json=payload)
 
             if response.status_code == 429:
                 logger.warning("Gemini rate limited")
-                self._rate_limiter.record_error()
                 raise RuntimeError("Gemini rate limited")
 
             response.raise_for_status()
@@ -286,6 +297,8 @@ Rules:
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             logger.error("Gemini talk API error: %s %s", status, exc.response.text[:200])
+            if status in (400, 401, 403):
+                raise NonRetryableError(f"Gemini API error: {status}") from exc
             raise RuntimeError(f"Gemini API error: {status}") from exc
         except httpx.RequestError as exc:
             logger.error("Gemini talk request failed: %s", exc)
@@ -434,12 +447,11 @@ Rules:
 
         try:
             logger.info("Generating DJ break script via Gemini")
-            url = f"/models/{self._model}:generateContent?key={self._api_key}"
+            url = f"/models/{self._model}:generateContent"
             response = await client.post(url, json=payload)
 
             if response.status_code == 429:
                 logger.warning("Gemini rate limited")
-                self._rate_limiter.record_error()
                 raise RuntimeError("Gemini rate limited")
 
             response.raise_for_status()
@@ -499,6 +511,8 @@ Rules:
                 status,
                 exc.response.text[:200],
             )
+            if status in (400, 401, 403):
+                raise NonRetryableError(f"Gemini API error: {status}") from exc
             raise RuntimeError(f"Gemini API error: {status}") from exc
         except httpx.RequestError as exc:
             logger.error("Gemini request failed: %s", exc)
@@ -559,14 +573,30 @@ Rules:
             },
         }
 
-        url = f"/models/{self._model}:generateContent?key={self._api_key}"
-        response = await client.post(url, json=payload)
+        url = f"/models/{self._model}:generateContent"
+        try:
+            response = await client.post(url, json=payload)
 
-        if response.status_code == 429:
-            self._rate_limiter.record_error()
-            raise RuntimeError("Gemini rate limited")
+            if response.status_code == 429:
+                raise RuntimeError("Gemini rate limited")
 
-        response.raise_for_status()
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # Wrap so the raw exception (which embeds the request URL)
+            # never propagates into retry logs or API error strings.
+            status = exc.response.status_code
+            logger.error(
+                "Gemini rewrite API error: %s %s",
+                status,
+                exc.response.text[:200],
+            )
+            if status in (400, 401, 403):
+                raise NonRetryableError(f"Gemini API error: {status}") from exc
+            raise RuntimeError(f"Gemini API error: {status}") from exc
+        except httpx.RequestError as exc:
+            logger.error("Gemini rewrite request failed: %s", exc)
+            raise RuntimeError(f"Gemini request failed: {exc}") from exc
+
         data = response.json()
 
         candidates = data.get("candidates", [])
@@ -607,7 +637,7 @@ Rules:
 
         try:
             client = self._get_client()
-            url = f"/models/{self._model}?key={self._api_key}"
+            url = f"/models/{self._model}"
             response = await client.get(url)
             if response.status_code == 200:
                 self._rate_limiter.record_success()
@@ -622,3 +652,9 @@ Rules:
             logger.warning("Gemini script health check failed: %s", exc)
             self._rate_limiter.record_error()
             return False
+
+    async def aclose(self) -> None:
+        """Close the underlying HTTP client and release its pool."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None

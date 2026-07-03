@@ -6,6 +6,7 @@ function Styles() {
   const [styles, setStyles] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [modalError, setModalError] = useState(null)
   const [showModal, setShowModal] = useState(false)
   const [editingStyle, setEditingStyle] = useState(null)
   const [deleteConfirm, setDeleteConfirm] = useState(null)
@@ -37,7 +38,7 @@ function Styles() {
   function openAdd() {
     setEditingStyle(null)
     setForm({ name: '', prompt: '', weight: 1, tags: '', schedule_start: '', schedule_end: '' })
-    setError(null)
+    setModalError(null)
     setShowModal(true)
   }
 
@@ -62,7 +63,7 @@ function Styles() {
       schedule_start: scheduleStart,
       schedule_end: scheduleEnd,
     })
-    setError(null)
+    setModalError(null)
     setShowModal(true)
   }
 
@@ -79,7 +80,7 @@ function Styles() {
     e.preventDefault()
     const validationError = validateForm()
     if (validationError) {
-      setError(validationError)
+      setModalError(validationError)
       return
     }
 
@@ -103,7 +104,7 @@ function Styles() {
       setShowModal(false)
       loadStyles()
     } catch (err) {
-      setError(err.message)
+      setModalError(err.message)
     }
   }
 
@@ -166,6 +167,7 @@ function Styles() {
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <h3>{editingStyle ? 'Edit Style' : 'Add Style'}</h3>
+            {modalError && <div className="alert alert-error">{modalError}</div>}
             <form onSubmit={handleSubmit}>
               <div className="form-group">
                 <label>Name</label>

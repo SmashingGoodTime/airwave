@@ -1,11 +1,21 @@
 """Tests for provider base classes, registry, and mock implementations."""
 
+import httpx
 import pytest
 import pytest_asyncio
 
 from server.providers.base import MusicProvider, ScriptWriterProvider, VoiceProvider
-from server.providers.scriptwriter.google import GeminiScriptWriterProvider
+from server.providers.scriptwriter.google import (
+    GeminiScriptWriterProvider,
+    _clean_for_tts,
+)
 from server.providers.registry import ProviderDefinition, ProviderRegistry
+from server.utils.env import update_env_file
+from server.utils.rate_limiter import (
+    NonRetryableError,
+    RateLimiter,
+    retry_with_backoff,
+)
 
 from tests.conftest import (
     FailingMusicProvider,
@@ -194,6 +204,23 @@ class CandidateFailingMusicProvider(MusicProvider):
         raise RuntimeError("candidate exploded")
 
 
+class ClosableMusicProvider(MusicProvider):
+    """Music provider that records whether aclose() was called."""
+
+    def __init__(self, api_key: str = "") -> None:
+        self.api_key = api_key
+        self.closed = False
+
+    async def generate(self, prompt: str, duration: int = 180) -> dict:
+        return {}
+
+    async def check_status(self) -> bool:
+        return True
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
 class TestProviderRegistry:
     def test_singleton(self):
         # Reset singleton for test isolation
@@ -263,6 +290,51 @@ class TestProviderRegistry:
 
         await registry.initialize(EmptyConfig())
         assert registry.get_music_provider() is None
+
+    @pytest.mark.asyncio
+    async def test_initialize_closes_stale_provider_instances(self):
+        """Reinitializing must aclose() replaced providers, not just drop them."""
+        registry = ProviderRegistry()
+        stale = ClosableMusicProvider()
+        registry._music = stale
+
+        class EmptyConfig:
+            pass
+
+        await registry.initialize(EmptyConfig())
+        assert stale.closed is True
+
+    @pytest.mark.asyncio
+    async def test_check_capability_health_closes_throwaway_provider(self):
+        """Candidate providers built for health tests must be closed."""
+        created: list[ClosableMusicProvider] = []
+
+        def factory(ctx):
+            provider = ClosableMusicProvider(api_key=ctx.value("SUNO_API_KEY"))
+            created.append(provider)
+            return provider
+
+        definitions = (
+            ProviderDefinition(
+                key="closable_music",
+                capability="music",
+                display_name="Closable Music",
+                module_path="tests.test_providers",
+                class_name="ClosableMusicProvider",
+                required_env=("SUNO_API_KEY",),
+                factory=factory,
+            ),
+        )
+        registry = ProviderRegistry(definitions=definitions)
+
+        class CandidateConfig:
+            SUNO_API_KEY = "candidate-key"
+
+        result = await registry.check_capability_health("music", CandidateConfig())
+
+        assert result["healthy"] is True
+        assert len(created) == 1
+        assert created[0].closed is True
 
     @pytest.mark.asyncio
     async def test_music_provider_priority_prefers_first_configured_definition(self):
@@ -515,12 +587,372 @@ class TestProviderRegistry:
 
         result = await registry.check_capability_health("music", CandidateConfig())
 
+        # Error strings are sanitized: exception class name + safe message,
+        # never raw URLs or keys.
         assert result == {
             "provider": "candidate_music",
             "healthy": False,
             "status": "error",
-            "error": "candidate exploded",
+            "error": "RuntimeError: candidate exploded",
         }
+
+
+# ---------------------------------------------------------------------------
+# Rate limiter / retry semantics
+# ---------------------------------------------------------------------------
+
+
+class TestRetryWithBackoff:
+    @pytest.mark.asyncio
+    async def test_non_retryable_error_short_circuits(self):
+        """NonRetryableError must fail immediately with one error record."""
+        limiter = RateLimiter(min_interval=0.0, name="test")
+        calls = 0
+
+        async def func():
+            nonlocal calls
+            calls += 1
+            raise NonRetryableError("auth failed")
+
+        with pytest.raises(NonRetryableError, match="auth failed"):
+            await retry_with_backoff(
+                func,
+                max_retries=3,
+                base_delay=0.0,
+                rate_limiter=limiter,
+                operation_name="test_op",
+            )
+
+        assert calls == 1
+        assert limiter.consecutive_errors == 1
+
+    @pytest.mark.asyncio
+    async def test_single_error_record_per_failed_attempt(self):
+        """retry_with_backoff is the only accounting point — one record per attempt."""
+
+        class SpyLimiter(RateLimiter):
+            def __init__(self):
+                super().__init__(min_interval=0.0, name="spy")
+                self.errors = 0
+                self.successes = 0
+
+            async def acquire(self):
+                return None
+
+            def record_error(self):
+                self.errors += 1
+
+            def record_success(self):
+                self.successes += 1
+
+        spy = SpyLimiter()
+        calls = 0
+
+        async def func():
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("transient")
+
+        with pytest.raises(RuntimeError, match="transient"):
+            await retry_with_backoff(
+                func,
+                max_retries=2,
+                base_delay=0.0,
+                rate_limiter=spy,
+                operation_name="test_op",
+            )
+
+        assert calls == 3
+        assert spy.errors == 3
+        assert spy.successes == 0
+
+    @pytest.mark.asyncio
+    async def test_circuit_open_rejects_without_calling_func(self):
+        """An open circuit propagates immediately and never invokes func."""
+        limiter = RateLimiter(
+            min_interval=0.0, name="test", circuit_threshold=1
+        )
+        limiter.record_error()  # threshold 1 — opens the circuit
+        assert limiter.circuit_open
+
+        calls = 0
+
+        async def func():
+            nonlocal calls
+            calls += 1
+            return "ok"
+
+        with pytest.raises(RuntimeError, match="circuit breaker OPEN"):
+            await retry_with_backoff(
+                func,
+                max_retries=2,
+                base_delay=0.0,
+                rate_limiter=limiter,
+                operation_name="test_op",
+            )
+
+        assert calls == 0
+        assert limiter.consecutive_errors == 1  # rejection not recorded
+
+
+class TestCircuitBreakerHalfOpen:
+    @pytest.mark.asyncio
+    async def test_half_open_admits_single_probe(self):
+        """Only one probe may be in flight while the circuit is half-open."""
+        limiter = RateLimiter(
+            min_interval=0.0,
+            name="test",
+            circuit_threshold=1,
+            circuit_base_cooldown=0.0,
+        )
+        limiter.record_error()  # opens circuit; cooldown 0 expires instantly
+        limiter._backoff_until = 0.0  # skip the error backoff sleep in tests
+
+        await limiter.acquire()  # transitions to half-open, claims the probe
+
+        with pytest.raises(RuntimeError, match="probe already in flight"):
+            await limiter.acquire()
+
+        # Probe completes successfully — circuit closes, calls flow again.
+        limiter.record_success()
+        assert limiter.circuit_state == "closed"
+        await limiter.acquire()
+
+    @pytest.mark.asyncio
+    async def test_failed_probe_reopens_and_releases_probe_slot(self):
+        limiter = RateLimiter(
+            min_interval=0.0,
+            name="test",
+            circuit_threshold=1,
+            circuit_base_cooldown=0.0,
+        )
+        limiter.record_error()
+        limiter._backoff_until = 0.0
+
+        await limiter.acquire()  # half-open probe
+        limiter.record_error()  # probe failed — circuit re-opens
+
+        assert not limiter._probe_in_flight
+        limiter._backoff_until = 0.0
+        limiter._circuit_open_until = 0.0
+        await limiter.acquire()  # next probe is admitted again
+
+
+# ---------------------------------------------------------------------------
+# .env writing safety
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateEnvFile:
+    def test_rejects_newline_injection(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        monkeypatch.setenv("ENV_FILE", str(env_file))
+
+        with pytest.raises(ValueError, match="control characters"):
+            update_env_file({"GOOGLE_API_KEY": "abc\nEVIL_VAR=1"})
+
+        assert not env_file.exists()
+
+    def test_rejects_invalid_variable_name(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        monkeypatch.setenv("ENV_FILE", str(env_file))
+
+        with pytest.raises(ValueError, match="Invalid environment variable"):
+            update_env_file({"BAD NAME": "value"})
+
+    def test_quotes_values_with_spaces_and_hashes(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        monkeypatch.setenv("ENV_FILE", str(env_file))
+
+        update_env_file({"SUNO_API_KEY": "abc def#ghi"})
+
+        content = env_file.read_text(encoding="utf-8")
+        assert 'SUNO_API_KEY="abc def#ghi"' in content
+
+    def test_strips_whitespace_and_updates_in_place(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "# comment\nGOOGLE_API_KEY=old\nOTHER=keep\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("ENV_FILE", str(env_file))
+
+        update_env_file({"GOOGLE_API_KEY": "  newkey  "})
+
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+        assert "GOOGLE_API_KEY=newkey" in lines
+        assert "OTHER=keep" in lines
+        assert lines.count("# comment") == 1
+
+
+# ---------------------------------------------------------------------------
+# Suno provider: paid submissions must never be retried by poll/download
+# ---------------------------------------------------------------------------
+
+
+class TestSunoMusicProvider:
+    @pytest.mark.asyncio
+    async def test_poll_failure_does_not_resubmit(self, tmp_path, monkeypatch):
+        """A transient poll failure retries the SAME task, never resubmits."""
+        from server.providers.music import suno as suno_module
+        from server.providers.music.suno import SunoMusicProvider
+
+        monkeypatch.setattr(suno_module, "POLL_INTERVAL", 0)
+
+        submits = 0
+        polls = 0
+
+        def api_handler(request: httpx.Request) -> httpx.Response:
+            nonlocal submits, polls
+            if request.url.path == "/api/v1/generate":
+                submits += 1
+                return httpx.Response(
+                    200, json={"code": 200, "data": {"taskId": "task-1"}}
+                )
+            if request.url.path == "/api/v1/generate/record-info":
+                polls += 1
+                if polls == 1:
+                    return httpx.Response(500)  # transient poll failure
+                if polls == 2:
+                    # Pending state where "data" is null — must not crash
+                    return httpx.Response(200, json={"code": 200, "data": None})
+                return httpx.Response(
+                    200,
+                    json={
+                        "code": 200,
+                        "data": {
+                            "status": "SUCCESS",
+                            "response": {
+                                "sunoData": [
+                                    {
+                                        "audioUrl": "https://cdn.example.com/song.mp3",
+                                        "title": "Test Song",
+                                        "duration": 42,
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                )
+            raise AssertionError(f"unexpected request: {request.url}")
+
+        downloads = 0
+        seen_download_headers = {}
+
+        def download_handler(request: httpx.Request) -> httpx.Response:
+            nonlocal downloads
+            downloads += 1
+            seen_download_headers.update(dict(request.headers))
+            return httpx.Response(200, content=b"audio-bytes")
+
+        provider = SunoMusicProvider(api_key="secret-key", audio_dir=str(tmp_path))
+        provider._rate_limiter = RateLimiter(
+            calls_per_minute=100, min_interval=0.0, name="suno_test"
+        )
+        client = provider._get_client()
+        client._transport = httpx.MockTransport(api_handler)
+        monkeypatch.setattr(
+            provider,
+            "_download_client",
+            lambda: httpx.AsyncClient(
+                transport=httpx.MockTransport(download_handler)
+            ),
+        )
+
+        result = await provider.generate("ambient chill instrumental")
+
+        assert submits == 1, "poll/download failures must not resubmit"
+        assert polls == 3
+        assert downloads == 1
+        assert result["task_id"] == "task-1"
+        assert result["title"] == "Test Song"
+
+        # The CDN download must not carry the API Bearer token.
+        assert "authorization" not in seen_download_headers
+
+        await provider.aclose()
+
+    @pytest.mark.asyncio
+    async def test_insufficient_credits_is_non_retryable(
+        self, tmp_path, monkeypatch
+    ):
+        from server.providers.music.suno import SunoMusicProvider
+
+        submits = 0
+
+        def api_handler(request: httpx.Request) -> httpx.Response:
+            nonlocal submits
+            submits += 1
+            return httpx.Response(429, json={"msg": "insufficient credits"})
+
+        provider = SunoMusicProvider(api_key="secret-key", audio_dir=str(tmp_path))
+        provider._rate_limiter = RateLimiter(
+            calls_per_minute=100, min_interval=0.0, name="suno_test"
+        )
+        client = provider._get_client()
+        client._transport = httpx.MockTransport(api_handler)
+
+        with pytest.raises(NonRetryableError, match="insufficient credits"):
+            await provider.generate("lo-fi jazz")
+
+        assert submits == 1
+        assert provider._rate_limiter.consecutive_errors == 1
+
+        await provider.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Gemini provider: the API key must never ride the URL
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiKeyHandling:
+    @pytest.mark.asyncio
+    async def test_api_key_in_header_never_in_url(self):
+        provider = GeminiScriptWriterProvider(api_key="super-secret-key")
+        provider._rate_limiter = RateLimiter(
+            calls_per_minute=100, min_interval=0.0, name="gemini_test"
+        )
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            captured["headers"] = dict(request.headers)
+            return httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {
+                            "finishReason": "STOP",
+                            "content": {
+                                "parts": [{"text": "Hello there. Great song."}]
+                            },
+                        }
+                    ]
+                },
+            )
+
+        client = provider._get_client()
+        client._transport = httpx.MockTransport(handler)
+
+        result = await provider.write_break({"dj_name": "DJ"})
+
+        assert result["script_text"]
+        assert "super-secret-key" not in captured["url"]
+        assert "key=" not in captured["url"]
+        assert captured["headers"]["x-goog-api-key"] == "super-secret-key"
+
+        await provider.aclose()
+
+
+class TestCleanForTts:
+    def test_complete_final_sentence_is_kept_when_truncated(self):
+        """MAX_TOKENS exactly at a sentence boundary must not lose a sentence."""
+        text = "First sentence. Second sentence."
+        assert _clean_for_tts(text, truncated=True) == text
+
+    def test_incomplete_final_sentence_is_trimmed(self):
+        text = "First sentence. Second sen"
+        assert _clean_for_tts(text, truncated=True) == "First sentence."
 
 
 class TestFishAudioVoiceProvider:

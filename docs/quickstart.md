@@ -16,7 +16,7 @@ A detailed walkthrough to get your AI radio station up and running. If you just 
 8. [How Your Station Runs Itself](#8-how-your-station-runs-itself)
 9. [Monitoring with the Dashboard](#9-monitoring-with-the-dashboard)
 10. [Setting Up Talk Shows](#10-setting-up-talk-shows)
-11. [Setting Up Listener Call-in](#11-setting-up-listener-call-in)
+11. [Listener Call-in (Roadmap)](#11-listener-call-in-roadmap)
 12. [Stopping and Restarting](#12-stopping-and-restarting)
 13. [Troubleshooting](#13-troubleshooting)
 14. [Next Steps](#14-next-steps)
@@ -62,7 +62,15 @@ cd ai-radio-dj
 cp .env.example .env
 ```
 
-This creates a file called `.env` where your API keys and settings will live. You can edit it now or enter keys through the web interface later.
+This creates a file called `.env` where your API keys and settings will live. This step is **required** — Docker Compose mounts the file into the app container so keys entered through the setup wizard are saved back to it. You can edit it now or enter keys through the web interface later.
+
+### Create the data directory
+
+```bash
+mkdir -p data
+```
+
+The station's database lives here on your machine, so your settings and play history survive container upgrades.
 
 ### Add emergency fallback audio
 
@@ -135,12 +143,13 @@ The `.env` file has a few settings you might want to change. Most people can lea
 HOST=0.0.0.0
 PORT=8000
 
-# Icecast stream settings
+# Stream passwords
 ICECAST_SOURCE_PASSWORD=hackme
 ICECAST_ADMIN_PASSWORD=hackme
+HARBOR_SOURCE_PASSWORD=hackme
 ```
 
-> **Important:** If anyone outside your local network will access your station, change the Icecast passwords from `hackme` to something secure.
+> **Important:** If anyone outside your local network will access your station, change all passwords from `hackme` to something secure. Also note that the control API on port 8000 has no authentication — see the [Security section in the README](../README.md#13-security).
 
 For a complete list of every setting, see the [Configuration Reference](configuration.md).
 
@@ -316,44 +325,9 @@ The station will automatically switch to talk mode during the scheduled time.
 
 ---
 
-## 11. Setting Up Listener Call-in
+## 11. Listener Call-in (Roadmap)
 
-Call-in lets real people call a phone number and talk to your AI host. This requires a Twilio account and (optionally) an OpenAI account for the conversation AI.
-
-### Step 1: Get Twilio Credentials
-
-1. Sign up at [twilio.com](https://twilio.com)
-2. Get a phone number from Twilio
-3. Note your Account SID and Auth Token
-
-### Step 2: Configure Environment
-
-Add to your `.env`:
-
-```env
-TWILIO_ACCOUNT_SID=your_sid
-TWILIO_AUTH_TOKEN=your_token
-TWILIO_PHONE_NUMBER=+1234567890
-CALL_WEBHOOK_BASE_URL=https://your-public-url.com
-OPENAI_API_KEY=your_key
-```
-
-> **Important:** `CALL_WEBHOOK_BASE_URL` must be a publicly accessible URL. For local development, use a tool like ngrok to expose your local server.
-
-### Step 3: Configure Call Settings
-
-Go to the **Calls** page and set:
-- **Mode** — Live (direct to air), pre-recorded (screened first), or both
-- **Max duration** — How long calls can last
-- **Moderation level** — How strict the AI host's content guardrails are
-- **Screening prompt** — What the AI asks callers during screening
-
-### Step 4: Share the Number
-
-Give your listeners the Twilio phone number. When they call:
-1. The AI screens the caller
-2. The call appears in your Calls dashboard
-3. You approve, reject, or let the AI handle it based on your settings
+> **Not yet implemented.** Listener call-in — real people calling a phone number and talking to your AI host — is a planned feature. There is no Calls page or telephony integration in the current release. Talk shows (above) are the way to put AI voices on air today.
 
 ---
 
@@ -365,7 +339,7 @@ Give your listeners the Twilio phone number. When they call:
 docker-compose down
 ```
 
-Your database, settings, and audio files are all saved.
+Everything is saved on your machine, outside the containers: the database in `data/`, API keys in `.env`, and audio in `audio/`.
 
 ### Restart your station
 
@@ -430,14 +404,6 @@ This is normal — it means the WebSocket connection couldn't be established, so
 3. Verify the **Google API key** is set - the script writer generates talk content
 4. Verify the **Fish Audio API key** is set - voices render the scripts
 5. Check the logs: `docker-compose logs app | grep talk`
-
-### "Calls aren't coming through"
-
-1. Verify your **Twilio credentials** are correct in `.env`
-2. Check that `CALL_WEBHOOK_BASE_URL` is publicly accessible
-3. Make sure `TWILIO_PHONE_NUMBER` is a valid Twilio number you own
-4. Check the **Calls** page — the status bar shows whether telephony is configured
-5. Check logs: `docker-compose logs app | grep call`
 
 ---
 

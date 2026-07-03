@@ -14,7 +14,7 @@ Every setting in AI Radio DJ, explained. Most settings have sensible defaults an
 6. [Announcements (Web UI)](#6-announcements-web-ui)
 7. [Show Schedule (Web UI)](#7-show-schedule-web-ui)
 8. [Talk Show Configuration (Web UI)](#8-talk-show-configuration-web-ui)
-9. [Call-in Configuration (Web UI)](#9-call-in-configuration-web-ui)
+9. [Call-in Configuration (Roadmap)](#9-call-in-configuration-roadmap)
 10. [Audio Standards](#10-audio-standards)
 11. [Rate Limits](#11-rate-limits)
 12. [Background Loops](#12-background-loops)
@@ -46,7 +46,7 @@ These are set in the `.env` file at the project root. Changes require restarting
 | `HOST` | `0.0.0.0` | Network address the server listens on. `0.0.0.0` means all interfaces. |
 | `PORT` | `8000` | Port for the web dashboard and API. |
 | `LOG_LEVEL` | `INFO` | How verbose the logs are. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Use `DEBUG` for troubleshooting. |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./radio.db` | Path to the SQLite database. You shouldn't need to change this. |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./radio.db` | Path to the SQLite database. Under docker-compose this is overridden to `sqlite+aiosqlite:////data/radio.db` so the database persists in the host `./data` directory. |
 | `AUDIO_DIR` | `./audio` | Root directory for all audio files (tracks, breaks, fallback, archive). |
 
 ### API Keys
@@ -55,21 +55,10 @@ These are set in the `.env` file at the project root. Changes require restarting
 |----------|---------|-------------|
 | `SUNO_API_KEY` | *(empty)* | Key for Suno music generation. Without this, no music is created. |
 | `GOOGLE_API_KEY` | *(empty)* | Key for Google Gemini script writing. Without this, no DJ scripts or talk segments are written. |
+| `GEMINI_MODEL` | `gemini-3.5-flash` | Gemini model used for script writing. |
 | `FISH_AUDIO_API_KEY` | *(empty)* | Key for Fish Audio voice rendering. Without this, DJ scripts aren't spoken aloud. |
 
 All keys are optional. The station starts without them but won't generate content until they're provided. You can enter keys through the setup wizard instead of editing `.env`.
-
-### Telephony & Conversation AI (Optional)
-
-| Variable | Default | What It Does |
-|----------|---------|-------------|
-| `TWILIO_ACCOUNT_SID` | *(empty)* | Twilio account SID for listener call-in. |
-| `TWILIO_AUTH_TOKEN` | *(empty)* | Twilio auth token. |
-| `TWILIO_PHONE_NUMBER` | *(empty)* | The phone number listeners call (e.g., `+1234567890`). |
-| `CALL_WEBHOOK_BASE_URL` | *(empty)* | Public URL where Twilio sends webhooks (e.g., `https://your-domain.com`). Must be reachable from the internet. |
-| `OPENAI_API_KEY` | *(empty)* | OpenAI API key for the real-time conversation AI that talks to callers. |
-
-These are only needed if you want listener call-in. Talk shows work without them.
 
 ### Liquidsoap Connection
 
@@ -77,7 +66,8 @@ These are only needed if you want listener call-in. Talk shows work without them
 |----------|---------|-------------|
 | `LIQUIDSOAP_HOST` | `liquidsoap` | Hostname of the Liquidsoap service. Use `localhost` for local development. |
 | `LIQUIDSOAP_PORT` | `1234` | Port for Liquidsoap's control interface. |
-| `LIQUIDSOAP_HARBOR_PORT` | `8005` | Port for live caller audio input (harbor). |
+| `LIQUIDSOAP_HARBOR_PORT` | `8005` | Port for live caller audio input (harbor). Only reachable inside the Docker network. |
+| `HARBOR_SOURCE_PASSWORD` | `hackme` | Password a source must present to connect to the harbor input. |
 
 In Docker, the defaults connect to the `liquidsoap` container automatically.
 
@@ -86,12 +76,16 @@ In Docker, the defaults connect to the `liquidsoap` container automatically.
 | Variable | Default | What It Does |
 |----------|---------|-------------|
 | `ICECAST_URL` | `http://localhost:8080/stream` | Public URL for the live stream. Shown in the dashboard player. |
-| `ICECAST_SOURCE_PASSWORD` | `hackme` | Password Liquidsoap uses to connect to Icecast. |
-| `ICECAST_ADMIN_PASSWORD` | `hackme` | Password for the Icecast admin panel. |
-| `ICECAST_HOSTNAME` | `localhost` | Hostname for Icecast. |
-| `ICECAST_PORT` | `8080` | Port for the stream server. |
+| `ICECAST_SOURCE_PASSWORD` | `hackme` | Password Liquidsoap uses to connect to Icecast. Injected into the Icecast container at startup. |
+| `ICECAST_ADMIN_PASSWORD` | `hackme` | Password for the Icecast admin panel. Injected into the Icecast container at startup. |
 
-> **Security note:** Change both passwords from `hackme` before exposing your station to the internet.
+> **Security note:** Change all `hackme` passwords before exposing your station to the internet.
+
+### CORS
+
+| Variable | Default | What It Does |
+|----------|---------|-------------|
+| `CORS_ALLOW_ORIGINS` | localhost origins for ports 8000 and 3000 | Comma-separated list of origins allowed to call the API from a browser. |
 
 ---
 
@@ -250,19 +244,9 @@ When the talk engine needs a new segment:
 
 ---
 
-## 9. Call-in Configuration (Web UI)
+## 9. Call-in Configuration (Roadmap)
 
-Managed on the **Calls** page. Configures how listener calls are handled.
-
-| Field | Default | What It Does |
-|-------|---------|-------------|
-| **Mode** | `prerecorded` | `live` (direct to air), `prerecorded` (recorded and screened), or `both` (operator chooses per show). |
-| **Max Call Duration** | `180` | Maximum call length in seconds. |
-| **Max Concurrent Calls** | `1` | How many calls can be active at once. |
-| **Moderation Level** | `moderate` | `strict`, `moderate`, or `relaxed` — controls AI host guardrails. |
-| **Queue Enabled** | `true` | Whether callers can wait in a queue when all lines are busy. |
-| **AI Host Personality** | *(empty)* | Personality prompt for the AI that talks to callers. |
-| **Screening Prompt** | *(empty)* | What the AI asks callers during the screening phase. |
+> **Not yet implemented.** Listener call-in (Twilio telephony, a Calls page, and a real-time conversation AI) is a planned feature and has no settings in the current release.
 
 ---
 
@@ -325,8 +309,6 @@ Each loop has independent error recovery. If one fails, it backs off gradually (
 | `audio/tracks/` | AI-generated music waiting to play | Buffer manager |
 | `audio/breaks/` | DJ break audio files | DJ brain |
 | `audio/talks/` | Generated talk show segments | Talk show engine |
-| `audio/calls/raw/` | Raw call recordings from Twilio | Call manager |
-| `audio/calls/processed/` | Processed call audio ready for broadcast | Call manager |
 | `audio/fallback/` | Emergency audio (you must add at least 1 file) | You |
 | `audio/archive/` | Played tracks (auto-cleaned per retention policy) | Cleanup loop |
 
@@ -350,7 +332,7 @@ The Liquidsoap config is at `liquidsoap/station.liq`:
 |---------|-------|-------------|
 | **Telnet Port** | 1234 | Control interface for the app to queue tracks |
 | **Queue Source** | `request.queue` | The app pushes tracks through this |
-| **Harbor Input** | Port 8005 | Live caller audio input — highest priority source in the chain |
+| **Harbor Input** | Port 8005 | Live caller audio input (reserved for the call-in roadmap feature) — highest priority source in the chain. Not published outside the Docker network. |
 | **Fallback** | `/audio/fallback/` | Directory scanned for emergency audio |
 | **Crossfade** | 3 seconds | Smooth transitions between tracks |
 | **Output** | MP3 192 kbps | Stream format sent to Icecast |

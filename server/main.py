@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from server.config import settings
@@ -152,10 +152,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(title="AI Radio DJ", version="0.1.0", lifespan=lifespan)
 
+# The SPA is served same-origin, so CORS only matters for local dev setups.
+# Credentials stay disabled because the write API is unauthenticated.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.cors_origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -179,6 +181,19 @@ if FRONTEND_DIST.is_dir():
         StaticFiles(directory=str(FRONTEND_DIST / "assets")),
         name="assets",
     )
+
+
+# Registered after the routers so real API routes match first. Covers every
+# standard method so non-GET requests to unknown /api/* paths get JSON, not
+# the SPA shell or a bare 405.
+@app.api_route(
+    "/api/{rest_of_path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+    include_in_schema=False,
+)
+async def api_not_found(rest_of_path: str) -> JSONResponse:
+    """Return a JSON 404 for unknown API paths regardless of HTTP method."""
+    return JSONResponse({"detail": "Not found"}, status_code=404)
 
 
 @app.get("/audio/{file_path:path}")
@@ -210,15 +225,11 @@ async def serve_spa(request: Request, full_path: str) -> FileResponse:
         The frontend index.html file, or a 404 message if not built.
     """
     if full_path.startswith("api/"):
-        from fastapi.responses import JSONResponse
-
         return JSONResponse({"detail": "Not found"}, status_code=404)
 
     index_file = FRONTEND_DIST / "index.html"
     if index_file.is_file():
         return FileResponse(str(index_file))
-
-    from fastapi.responses import JSONResponse
 
     return JSONResponse(
         {"detail": "Frontend not built. Run 'npm run build' in frontend/."},

@@ -1,10 +1,18 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react'
 
+// Broadcast when any player instance starts so the others pause themselves.
+const PLAY_EVENT = 'radio-player-play'
+let playerInstanceCounter = 0
+
 function AudioPlayer({ streamUrl, compact }) {
   const audioRef = useRef(null)
   const [status, setStatus] = useState('idle') // idle | loading | playing | error
   const statusRef = useRef('idle')
   const timeoutRef = useRef(null)
+  const instanceIdRef = useRef(null)
+  if (instanceIdRef.current === null) {
+    instanceIdRef.current = ++playerInstanceCounter
+  }
 
   const updateStatus = (val) => {
     statusRef.current = val
@@ -41,6 +49,7 @@ function AudioPlayer({ streamUrl, compact }) {
       await audio.play()
       cleanup()
       updateStatus('playing')
+      window.dispatchEvent(new CustomEvent(PLAY_EVENT, { detail: { id: instanceIdRef.current } }))
 
       // Monitor for stream dropping mid-playback
       audio.onended = () => updateStatus('error')
@@ -66,6 +75,17 @@ function AudioPlayer({ streamUrl, compact }) {
     audio.load()
     updateStatus('idle')
   }, [cleanup])
+
+  useEffect(() => {
+    // Pause this player when another instance starts playing.
+    const onOtherPlay = (event) => {
+      if (event.detail?.id !== instanceIdRef.current && statusRef.current === 'playing') {
+        handleStop()
+      }
+    }
+    window.addEventListener(PLAY_EVENT, onOtherPlay)
+    return () => window.removeEventListener(PLAY_EVENT, onOtherPlay)
+  }, [handleStop])
 
   useEffect(() => {
     return () => {

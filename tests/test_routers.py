@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.models.announcement import Announcement
@@ -211,6 +212,81 @@ class TestStylesRouter:
         resp = await client.post("/api/styles/reorder", json=[{"id": 1, "weight": 0}])
         assert resp.status_code == 422
 
+    @pytest.mark.asyncio
+    async def test_create_accepts_valid_schedule(self, client: AsyncClient):
+        resp = await client.post(
+            "/api/styles",
+            json={
+                "name": "Night",
+                "prompt": "ambient",
+                "schedule": '{"start": "22:00", "end": "06:00"}',
+            },
+        )
+        assert resp.status_code == 201
+        assert resp.json()["schedule"] == '{"start": "22:00", "end": "06:00"}'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "schedule",
+        [
+            "not json",
+            '"just a string"',
+            "[1, 2]",
+            '{"start": "22:00"}',
+            '{"start": "22:00", "end": "06:00", "extra": 1}',
+            '{"start": "25:00", "end": "06:00"}',
+            '{"start": "22:00", "end": "6pm"}',
+            '{"start": 22, "end": "06:00"}',
+        ],
+    )
+    async def test_create_rejects_malformed_schedule(
+        self, client: AsyncClient, schedule: str
+    ):
+        resp = await client.post(
+            "/api/styles",
+            json={"name": "Bad", "prompt": "p", "schedule": schedule},
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_update_rejects_malformed_schedule(self, client: AsyncClient):
+        create_resp = await client.post(
+            "/api/styles", json={"name": "S", "prompt": "p"}
+        )
+        resp = await client.put(
+            f"/api/styles/{create_resp.json()['id']}",
+            json={"schedule": '{"start": "nope", "end": "06:00"}'},
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_delete_style_removes_show_junction_rows(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        from sqlalchemy import select as sa_select
+
+        from server.models.show_style import show_styles
+
+        style_resp = await client.post(
+            "/api/styles", json={"name": "Linked", "prompt": "p"}
+        )
+        style_id = style_resp.json()["id"]
+        show_resp = await client.post(
+            "/api/shows",
+            json={"name": "Block", "show_type": "music", "style_ids": [style_id]},
+        )
+        assert show_resp.status_code == 201
+
+        resp = await client.delete(f"/api/styles/{style_id}")
+        assert resp.status_code == 200
+
+        result = await db_session.execute(
+            sa_select(show_styles.c.style_id).where(
+                show_styles.c.style_id == style_id
+            )
+        )
+        assert result.all() == []
+
 
 # ---------------------------------------------------------------------------
 # Announcements router
@@ -323,6 +399,76 @@ class TestAnnouncementsRouter:
             json=payload,
         )
         assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_list_orders_by_active_then_priority(self, client: AsyncClient):
+        await client.post(
+            "/api/announcements",
+            json={"text": "Low active", "priority": "low", "active": True},
+        )
+        await client.post(
+            "/api/announcements",
+            json={"text": "High inactive", "priority": "high", "active": False},
+        )
+        await client.post(
+            "/api/announcements",
+            json={"text": "Urgent active", "priority": "urgent", "active": True},
+        )
+
+        resp = await client.get("/api/announcements")
+        texts = [a["text"] for a in resp.json()]
+        assert texts == ["Urgent active", "Low active", "High inactive"]
+
+    @pytest.mark.asyncio
+    async def test_toggle_active_via_put(self, client: AsyncClient):
+        create_resp = await client.post(
+            "/api/announcements", json={"text": "Toggle me", "active": True}
+        )
+        ann_id = create_resp.json()["id"]
+
+        resp = await client.put(
+            f"/api/announcements/{ann_id}", json={"active": False}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["active"] is False
+
+        resp = await client.put(
+            f"/api/announcements/{ann_id}", json={"active": True}
+        )
+        assert resp.json()["active"] is True
+
+    @pytest.mark.asyncio
+    async def test_expires_at_normalized_to_utc(self, client: AsyncClient):
+        resp = await client.post(
+            "/api/announcements",
+            json={"text": "Zulu", "expires_at": "2099-01-01T00:00:00Z"},
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["expires_at"] == "2099-01-01T00:00:00+00:00"
+        assert data["expired"] is False
+
+    @pytest.mark.asyncio
+    async def test_auto_deactivation_state_visible(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        expired = Announcement(
+            text="Old news",
+            expires_at=datetime(2020, 1, 1, 0, 0),
+            active=True,
+        )
+        exhausted = Announcement(
+            text="Played out", max_plays=2, play_count=2, active=True
+        )
+        db_session.add_all([expired, exhausted])
+        await db_session.commit()
+
+        resp = await client.get("/api/announcements")
+        by_text = {a["text"]: a for a in resp.json()}
+        assert by_text["Old news"]["expired"] is True
+        assert by_text["Old news"]["plays_exhausted"] is False
+        assert by_text["Played out"]["plays_exhausted"] is True
+        assert by_text["Played out"]["expired"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -785,6 +931,88 @@ class TestDashboardRouter:
         assert "scriptwriter" in data
         assert "voice" in data
 
+    @pytest.mark.asyncio
+    async def test_track_lyrics_missing_returns_404(self, client: AsyncClient):
+        resp = await client.get("/api/dashboard/track/9999/lyrics")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_break_script_missing_returns_404(self, client: AsyncClient):
+        resp = await client.get("/api/dashboard/break/9999/script")
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Recording router
+# ---------------------------------------------------------------------------
+
+
+class TestRecordingRouter:
+    @pytest.mark.asyncio
+    async def test_toggle_playout_failure_leaves_db_unchanged(
+        self, client: AsyncClient, db_session: AsyncSession, monkeypatch
+    ):
+        from server.engine.playout import PlayoutInterface
+
+        station = Station(recording_enabled=False)
+        db_session.add(station)
+        await db_session.commit()
+
+        async def failing_start(self) -> bool:
+            return False
+
+        monkeypatch.setattr(PlayoutInterface, "start_recording", failing_start)
+
+        resp = await client.post("/api/recording/toggle", json={"enabled": True})
+
+        assert resp.status_code == 502
+        db_session.expire_all()
+        result = await db_session.execute(select(Station).limit(1))
+        assert result.scalar_one().recording_enabled is False
+
+    @pytest.mark.asyncio
+    async def test_toggle_success_commits_and_reports_real_state(
+        self, client: AsyncClient, db_session: AsyncSession, monkeypatch
+    ):
+        from server.engine.playout import PlayoutInterface
+
+        station = Station(recording_enabled=False)
+        db_session.add(station)
+        await db_session.commit()
+
+        async def ok_start(self) -> bool:
+            return True
+
+        async def recording_on(self) -> bool:
+            return True
+
+        monkeypatch.setattr(PlayoutInterface, "start_recording", ok_start)
+        monkeypatch.setattr(PlayoutInterface, "is_recording", recording_on)
+
+        resp = await client.post("/api/recording/toggle", json={"enabled": True})
+
+        assert resp.status_code == 200
+        assert resp.json() == {"enabled": True, "active": True}
+        db_session.expire_all()
+        result = await db_session.execute(select(Station).limit(1))
+        assert result.scalar_one().recording_enabled is True
+
+
+# ---------------------------------------------------------------------------
+# API catch-all
+# ---------------------------------------------------------------------------
+
+
+class TestApiCatchAll:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["GET", "POST", "PUT", "DELETE", "PATCH"])
+    async def test_unknown_api_path_returns_json_404(
+        self, client: AsyncClient, method: str
+    ):
+        resp = await client.request(method, "/api/nonexistent/endpoint")
+        assert resp.status_code == 404
+        assert resp.json() == {"detail": "Not found"}
+
 
 # ---------------------------------------------------------------------------
 # PlayLog router
@@ -802,12 +1030,109 @@ class TestPlayLogRouter:
         assert data["page"] == 1
 
     @pytest.mark.asyncio
-    async def test_export_csv_empty(self, client: AsyncClient):
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "start_date=not-a-date",
+            "end_date=2026-13-01",
+            "start_date=2026-01-01T00:00:00&end_date=garbage",
+        ],
+    )
+    async def test_invalid_date_filter_returns_422(
+        self, client: AsyncClient, query: str
+    ):
+        resp = await client.get(f"/api/playlog?{query}")
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_date_filter_accepts_z_suffix(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        db_session.add(
+            PlayLog(
+                item_type="track",
+                item_id=1,
+                started_at=datetime(2026, 1, 15, 12, 0),
+                duration=180.0,
+            )
+        )
+        await db_session.commit()
+
+        resp = await client.get(
+            "/api/playlog?start_date=2026-01-01T00:00:00Z&end_date=2026-02-01T00:00:00Z"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        # Stored naive UTC must serialize with an explicit UTC offset
+        assert data["items"][0]["started_at"] == "2026-01-15T12:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_export_csv_empty(self, client: AsyncClient, engine, monkeypatch):
+        self._patch_export_factory(engine, monkeypatch)
         resp = await client.get("/api/playlog/export")
         assert resp.status_code == 200
         assert "text/csv" in resp.headers["content-type"]
         lines = resp.text.strip().split("\n")
         assert len(lines) == 1  # Header only
+
+    @staticmethod
+    def _patch_export_factory(engine, monkeypatch) -> None:
+        """Point the export's own session factory at the test engine."""
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        import server.routers.playlog as playlog_router
+
+        factory = async_sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
+        monkeypatch.setattr(playlog_router, "get_session_factory", lambda: factory)
+
+    @pytest.mark.asyncio
+    async def test_export_csv_guards_formula_injection(
+        self, client: AsyncClient, db_session: AsyncSession, engine, monkeypatch
+    ):
+        self._patch_export_factory(engine, monkeypatch)
+        db_session.add(
+            PlayLog(
+                item_type="track",
+                item_id=1,
+                started_at=datetime(2026, 1, 1, 12, 0),
+                duration=180.0,
+                metadata_json='=HYPERLINK("http://evil.example")',
+            )
+        )
+        await db_session.commit()
+
+        resp = await client.get("/api/playlog/export")
+
+        assert resp.status_code == 200
+        assert "'=HYPERLINK" in resp.text
+        # Timestamps carry the explicit UTC offset
+        assert "2026-01-01T12:00:00+00:00" in resp.text
+
+    @pytest.mark.asyncio
+    async def test_export_csv_streams_all_batches(
+        self, client: AsyncClient, db_session: AsyncSession, engine, monkeypatch
+    ):
+        import server.routers.playlog as playlog_router
+
+        self._patch_export_factory(engine, monkeypatch)
+        monkeypatch.setattr(playlog_router, "EXPORT_BATCH_SIZE", 2)
+        for i in range(5):
+            db_session.add(
+                PlayLog(
+                    item_type="track",
+                    item_id=i,
+                    started_at=datetime(2026, 1, 1, i, 0),
+                )
+            )
+        await db_session.commit()
+
+        resp = await client.get("/api/playlog/export")
+
+        lines = resp.text.strip().split("\n")
+        assert len(lines) == 6  # header + 5 rows
 
 
 # ---------------------------------------------------------------------------

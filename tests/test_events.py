@@ -58,7 +58,9 @@ class TestEventBus:
         # Second handler should still run
         assert received == ["ok"]
 
-    def test_async_handler_runs_without_running_loop(self):
+    def test_async_handler_without_running_loop_is_dropped(self, caplog):
+        """Without a running loop the coroutine is dropped with a warning,
+        never run on a foreign loop via asyncio.run."""
         bus = EventBus()
         received = []
 
@@ -66,9 +68,31 @@ class TestEventBus:
             received.append((event, data))
 
         bus.on("async.event", async_handler)
-        bus.emit("async.event", {"key": "value"})
+        with caplog.at_level(logging.WARNING, logger="server.events.emitter"):
+            bus.emit("async.event", {"key": "value"})
 
-        assert received == [("async.event", {"key": "value"})]
+        assert received == []
+        assert "dropping async handler" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_async_handler_task_is_strongly_referenced(self):
+        bus = EventBus()
+        release = asyncio.Event()
+        received = []
+
+        async def async_handler(event, data):
+            await release.wait()
+            received.append(event)
+
+        bus.on("async.event", async_handler)
+        bus.emit("async.event")
+
+        # The pending task must be held by the bus so GC cannot collect it.
+        assert len(bus._tasks) == 1
+        release.set()
+        await asyncio.gather(*bus._tasks)
+        assert received == ["async.event"]
+        assert bus._tasks == set()
 
     @pytest.mark.asyncio
     async def test_async_handler_exception_is_logged(self, caplog):
@@ -98,7 +122,26 @@ class TestEventBus:
         bus.disconnect_ws(ws)
         assert ws not in bus._ws_clients
 
-    def test_ws_broadcast_runs_without_running_loop(self):
+    def test_ws_broadcast_without_running_loop_drops_message(self, caplog):
+        bus = EventBus()
+
+        class FakeWS:
+            def __init__(self):
+                self.messages = []
+
+            async def send_text(self, message):
+                self.messages.append(message)
+
+        ws = FakeWS()
+        bus.connect_ws(ws)
+        with caplog.at_level(logging.WARNING, logger="server.events.emitter"):
+            bus.emit("ws.event", {"key": "value"})
+
+        assert ws.messages == []
+        assert "dropping WebSocket message" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_ws_broadcast_delivers_through_per_client_queue(self):
         bus = EventBus()
 
         class FakeWS:
@@ -112,9 +155,83 @@ class TestEventBus:
         bus.connect_ws(ws)
         bus.emit("ws.event", {"key": "value"})
 
+        # Let the sender task drain the queue.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
         assert [json.loads(message) for message in ws.messages] == [
             {"type": "ws.event", "data": {"key": "value"}}
         ]
+        bus.disconnect_ws(ws)
+
+    @pytest.mark.asyncio
+    async def test_send_ws_targets_single_client(self):
+        bus = EventBus()
+
+        class FakeWS:
+            def __init__(self):
+                self.messages = []
+
+            async def send_text(self, message):
+                self.messages.append(message)
+
+        ws_a = FakeWS()
+        ws_b = FakeWS()
+        bus.connect_ws(ws_a)
+        bus.connect_ws(ws_b)
+
+        assert bus.send_ws(ws_a, '{"type": "snapshot"}') is True
+        assert bus.send_ws(FakeWS(), '{"type": "snapshot"}') is False
+
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert ws_a.messages == ['{"type": "snapshot"}']
+        assert ws_b.messages == []
+        bus.disconnect_ws(ws_a)
+        bus.disconnect_ws(ws_b)
+
+    @pytest.mark.asyncio
+    async def test_ws_queue_overflow_drops_oldest(self):
+        from server.events import emitter
+
+        bus = EventBus()
+
+        class StuckWS:
+            async def send_text(self, message):
+                await asyncio.Event().wait()  # never completes
+
+        ws = StuckWS()
+        bus.connect_ws(ws)
+        client = bus._ws_clients[ws]
+
+        total = emitter.WS_QUEUE_MAXSIZE + 5
+        for i in range(total):
+            bus.send_ws(ws, str(i))
+        await asyncio.sleep(0)
+
+        assert client.dropped >= 4
+        assert client.queue.qsize() <= emitter.WS_QUEUE_MAXSIZE
+        bus.disconnect_ws(ws)
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_sender_task(self):
+        bus = EventBus()
+
+        class FakeWS:
+            async def send_text(self, message):
+                pass
+
+        ws = FakeWS()
+        bus.connect_ws(ws)
+        bus.send_ws(ws, "hello")
+        client = bus._ws_clients[ws]
+        assert client.sender is not None
+
+        bus.disconnect_ws(ws)
+        await asyncio.sleep(0)
+        assert client.sender.cancelled() or client.sender.done()
+        assert ws not in bus._ws_clients
 
     def test_disconnect_nonexistent_ws(self):
         bus = EventBus()

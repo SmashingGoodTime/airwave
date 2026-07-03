@@ -1,19 +1,39 @@
 const BASE_URL = '/api'
+const DEFAULT_TIMEOUT_MS = 15000
 
 async function apiFetch(path, options = {}) {
   const url = `${BASE_URL}${path}`
+  const { timeout = DEFAULT_TIMEOUT_MS, ...rest } = options
   const config = {
     headers: {
       'Content-Type': 'application/json',
     },
-    ...options,
+    ...rest,
   }
 
-  if (config.body && typeof config.body === 'object' && !(config.body instanceof Blob)) {
+  if (!config.signal && timeout > 0 && typeof AbortSignal.timeout === 'function') {
+    config.signal = AbortSignal.timeout(timeout)
+  }
+
+  if (
+    config.body !== undefined &&
+    config.body !== null &&
+    typeof config.body !== 'string' &&
+    !(config.body instanceof Blob) &&
+    !(config.body instanceof FormData)
+  ) {
     config.body = JSON.stringify(config.body)
   }
 
-  const response = await fetch(url, config)
+  let response
+  try {
+    response = await fetch(url, config)
+  } catch (err) {
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+      throw new Error(`Request timed out: ${path}`)
+    }
+    throw err
+  }
 
   if (!response.ok) {
     const errorBody = await response.text()
@@ -24,7 +44,9 @@ async function apiFetch(path, options = {}) {
     } catch {
       message = errorBody
     }
-    throw new Error(`API Error ${response.status}: ${message}`)
+    const error = new Error(`API Error ${response.status}: ${message}`)
+    error.status = response.status
+    throw error
   }
 
   const contentType = response.headers.get('content-type')
@@ -40,7 +62,7 @@ export function fetchSetupStatus() {
 }
 
 export function completeSetup(data) {
-  return apiFetch('/setup/complete', { method: 'POST', body: data })
+  return apiFetch('/setup/complete', { method: 'POST', body: data, timeout: 60000 })
 }
 
 // Styles
@@ -96,7 +118,7 @@ export function updateDJConfig(data) {
 }
 
 export function previewDJBreak(data) {
-  return apiFetch('/dj/preview', { method: 'POST', body: data })
+  return apiFetch('/dj/preview', { method: 'POST', body: data, timeout: 120000 })
 }
 
 export function fetchVoices(provider) {
@@ -247,7 +269,7 @@ export function fetchTalkSegments() {
 }
 
 export function previewTalkSegment(data) {
-  return apiFetch('/talk/preview', { method: 'POST', body: data })
+  return apiFetch('/talk/preview', { method: 'POST', body: data, timeout: 120000 })
 }
 
 // Providers
@@ -260,7 +282,7 @@ export function updateProviders(data) {
 }
 
 export function testProvider(providerName, data) {
-  const options = { method: 'POST' }
+  const options = { method: 'POST', timeout: 60000 }
   if (data) options.body = data
   return apiFetch(`/providers/test/${providerName}`, options)
 }

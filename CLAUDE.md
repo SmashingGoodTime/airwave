@@ -14,7 +14,7 @@ The system is designed so that **any radio station** can run it with minimal set
 
 ### Provider Abstraction (CRITICAL)
 
-The system uses a **plugin architecture** with three provider interfaces. All engine code MUST interact with providers through abstract base classes only. Never import a specific provider (Suno, ElevenLabs, Claude, etc.) directly in engine or router code. Always go through the provider registry.
+The system uses a **plugin architecture** with three provider interfaces. All engine code MUST interact with providers through abstract base classes only. Never import a specific provider (Suno, Gemini, Fish Audio, etc.) directly in engine or router code. Always go through the provider registry.
 
 ```
 providers/
@@ -24,10 +24,10 @@ providers/
 │   ├── suno.py        # MusicProvider implementation
 │   └── ...
 ├── scriptwriter/
-│   ├── claude.py      # ScriptWriterProvider implementation
+│   ├── google.py      # ScriptWriterProvider implementation
 │   └── ...
 └── voice/
-    ├── elevenlabs.py  # VoiceProvider implementation
+    ├── fish.py        # VoiceProvider implementation
     └── ...
 ```
 
@@ -76,8 +76,8 @@ New providers are added by:
 | Backend | Python 3.11+, FastAPI, SQLAlchemy (SQLite), APScheduler |
 | Frontend | React (Vite), served as static build by FastAPI |
 | Music Generation | Suno API (default provider) |
-| DJ Script Writing | Anthropic Claude API (default provider) |
-| TTS / DJ Voice | ElevenLabs API (default provider) |
+| DJ Script Writing | Google Gemini API (default provider) |
+| TTS / DJ Voice | Fish Audio API (default provider) |
 | Audio Processing | FFmpeg, pydub |
 | Playout | Liquidsoap |
 | Streaming | Icecast |
@@ -131,10 +131,10 @@ ai-radio-dj/
 │   │   │   └── suno.py
 │   │   ├── scriptwriter/
 │   │   │   ├── __init__.py
-│   │   │   └── claude.py
+│   │   │   └── google.py
 │   │   └── voice/
 │   │       ├── __init__.py
-│   │       └── elevenlabs.py
+│   │       └── fish.py
 │   │
 │   ├── engine/                    # Core station logic
 │   │   ├── __init__.py
@@ -397,7 +397,7 @@ Simple pub/sub event bus for extensibility:
 ### Setup Wizard (`Setup.jsx`)
 Only shown on first run. Steps:
 1. Station identity (name, call sign, timezone)
-2. API keys (Suno, Anthropic, ElevenLabs) — stored in DB, encrypted at rest
+2. API keys (Suno, Google, Fish Audio) — stored in DB, encrypted at rest
 3. DJ persona (name, personality, voice selection with preview)
 4. Content policy (instrumental only / clean / no restrictions)
 5. Add first few style prompts
@@ -508,8 +508,8 @@ Build in this sequence, getting each layer working before the next:
 7. Abstract base classes in `providers/base.py`
 8. Provider registry with config-driven instantiation
 9. Suno provider implementation
-10. Claude scriptwriter provider implementation
-11. ElevenLabs voice provider implementation
+10. Gemini scriptwriter provider implementation
+11. Fish Audio voice provider implementation
 12. Health check endpoints for each provider
 
 ### Phase 3: Engine

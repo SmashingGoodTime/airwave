@@ -2,7 +2,7 @@
 
 An AI-powered radio station that runs itself. It creates original music, writes DJ scripts, speaks them in a realistic voice, and streams everything live — all from one command.
 
-Now with **Talk Show Mode** for all-talk AI broadcasts and **Listener Call-in** so real callers can talk to your AI host on air.
+Now with **Talk Show Mode** for all-talk AI broadcasts. (**Listener Call-in** — real callers talking to your AI host on air — is on the roadmap; see [Listener Call-in](#8-listener-call-in-roadmap).)
 
 No music library needed. No recording equipment. No experience required.
 
@@ -17,13 +17,14 @@ No music library needed. No recording equipment. No experience required.
 5. [The Setup Wizard](#5-the-setup-wizard)
 6. [Using Your Station](#6-using-your-station)
 7. [Talk Shows](#7-talk-shows)
-8. [Listener Call-in](#8-listener-call-in)
+8. [Listener Call-in (Roadmap)](#8-listener-call-in-roadmap)
 9. [Development Setup](#9-development-setup)
 10. [Project Structure](#10-project-structure)
 11. [API Reference](#11-api-reference)
 12. [Tech Stack](#12-tech-stack)
-13. [Further Reading](#13-further-reading)
-14. [License](#14-license)
+13. [Security](#13-security)
+14. [Further Reading](#14-further-reading)
+15. [License](#15-license)
 
 ---
 
@@ -35,7 +36,6 @@ AI Radio DJ is a complete, self-running radio station powered by artificial inte
 - **Writes DJ scripts** — natural, conversational breaks between songs
 - **Speaks the scripts** in a realistic AI-generated voice
 - **Runs talk shows** — AI-hosted monologues, multi-voice conversations, debates, and interviews on topics you define
-- **Takes live calls** — listeners call a real phone number and talk to an AI host, either live on air or pre-recorded and screened
 - **Streams everything live** as a continuous broadcast anyone can listen to
 - **Manages itself** — generates new music when the queue gets low, rotates styles, handles errors
 
@@ -64,9 +64,8 @@ Behind the scenes:
 |      |                |                   |           |
 |  DJ Brain   -->  Script + Voice           |           |
 |      |                                    |           |
-|  Talk Engine --> Talk Segments             |           |
-|      |                                    v           |
-|  Call Manager --> Live/Recorded       Liquidsoap      |
+|  Talk Engine --> Talk Segments            v           |
+|                                       Liquidsoap      |
 |                                           |           |
 |                                       Icecast         |
 |                                           |           |
@@ -81,8 +80,6 @@ Behind the scenes:
 | Music Generation | Creates original songs from your style descriptions | [Suno](https://suno.com) |
 | Script Writing | Writes DJ scripts and talk show segments | [Google Gemini](https://aistudio.google.com) |
 | DJ Voice | Speaks the DJ scripts in a realistic voice | [Fish Audio](https://fish.audio) |
-| Telephony | Handles incoming listener calls | [Twilio](https://twilio.com) *(optional)* |
-| Conversation AI | Real-time voice conversation with callers | [OpenAI Realtime](https://openai.com) *(optional)* |
 
 ---
 
@@ -100,12 +97,7 @@ Behind the scenes:
 
 Each service has a free tier you can start with. You'll need an **API key** from each one — the setup wizard will show you exactly where to find them.
 
-### Optional (for call-in features)
-
-- **A Twilio account** — For a real phone number that listeners can call. [Sign up at twilio.com](https://twilio.com)
-- **An OpenAI account** — For the real-time conversation AI that talks to callers. [Sign up at openai.com](https://platform.openai.com)
-
-> **Don't have API keys yet?** That's fine. You can start the station without them and add keys later through the settings page. The station just won't generate content until at least the music key is added. Talk shows work without Twilio — call-in is an optional add-on.
+> **Don't have API keys yet?** That's fine. You can start the station without them and add keys later through the settings page. The station just won't generate content until at least the music key is added.
 
 ---
 
@@ -124,11 +116,19 @@ cd ai-radio-dj
 cp .env.example .env
 ```
 
-You can edit `.env` to add API keys now, or skip this and enter them through the setup wizard instead.
+This step is **required** — Docker Compose mounts `.env` into the app container so API keys entered through the setup wizard are saved back to it. You can edit `.env` to add API keys now, or enter them through the setup wizard instead.
 
-### Step 3: Add emergency audio
+While you're here, change the `ICECAST_SOURCE_PASSWORD`, `ICECAST_ADMIN_PASSWORD`, and `HARBOR_SOURCE_PASSWORD` values from their `hackme` defaults (see [Security](#13-security)).
 
-Your station needs at least one audio file to play if the AI music generation is slow or unavailable. Place any MP3 or WAV file in the fallback folder:
+### Step 3: Create the data directory and add emergency audio
+
+The station stores its database in a `data/` folder on your machine, so your settings survive container upgrades:
+
+```bash
+mkdir -p data
+```
+
+Your station also needs at least one audio file to play if the AI music generation is slow or unavailable. Place any MP3 or WAV file in the fallback folder:
 
 ```bash
 mkdir -p audio/fallback
@@ -253,7 +253,13 @@ The **Play Log** page shows a complete history of everything your station has pl
 docker-compose down
 ```
 
-Your settings and audio files are saved. Next time you run `docker-compose up`, everything picks up where it left off.
+Everything that matters lives on your machine, outside the containers:
+
+- **`data/`** — the station database (settings, styles, play history)
+- **`.env`** — API keys, including any entered through the setup wizard
+- **`audio/`** — generated music, DJ breaks, and recordings
+
+Next time you run `docker-compose up`, everything picks up where it left off — even after upgrading or rebuilding the containers.
 
 ---
 
@@ -287,46 +293,13 @@ Go to the **Shows** page and create a show with type "Talk". Link it to your tal
 
 ---
 
-## 8. Listener Call-in
+## 8. Listener Call-in (Roadmap)
 
-Let real listeners call your station and talk to an AI host. Requires a Twilio account.
+> **Not yet implemented.** Listener call-in is a planned feature — it is **not** in the current codebase. There is no Calls page, no `/api/calls/*` endpoints, and no Twilio or OpenAI integration yet.
 
-### Two Modes
+The plan: let real listeners call a phone number (via Twilio) and talk to an AI host (via a realtime conversation API), either live on air or pre-recorded, screened, and played back later. Some groundwork already exists — the Liquidsoap config includes a harbor input reserved for live caller audio — but the call manager, telephony provider, and conversation AI are not built.
 
-- **Live** — The caller's audio goes directly to the broadcast stream in real time
-- **Pre-recorded** — The caller's conversation with the AI is recorded, screened by the operator, and played back later
-
-### Setting Up Call-in
-
-1. Add your Twilio credentials to `.env` (or enter them in settings):
-   ```env
-   TWILIO_ACCOUNT_SID=your_sid
-   TWILIO_AUTH_TOKEN=your_token
-   TWILIO_PHONE_NUMBER=+1234567890
-   CALL_WEBHOOK_BASE_URL=https://your-public-url.com
-   OPENAI_API_KEY=your_key
-   ```
-2. Go to the **Calls** page and configure call settings (max duration, moderation level, screening prompt)
-3. Share the phone number with your listeners
-
-### Call Flow
-
-1. Listener calls the Twilio number
-2. The AI screens the caller using the screening prompt you configured
-3. The call appears in the **Calls** dashboard
-4. For live mode: you approve and the caller goes on air immediately
-5. For pre-recorded mode: the conversation is recorded, processed, and queued as a talk segment
-
-### Content Moderation
-
-- The AI host has guardrails in its system prompt
-- You set a moderation level: `strict`, `moderate`, or `relaxed`
-- Pre-recorded calls can be reviewed before airing
-- Phone numbers are stored as SHA-256 hashes for privacy
-
-### Without Twilio
-
-Talk shows work without any telephony setup. Call-in is purely optional — if Twilio credentials aren't configured, the Calls page simply shows that telephony isn't set up.
+Until then, Talk Shows (above) are the way to put AI voices on air.
 
 ---
 
@@ -353,7 +326,7 @@ npm install
 npm run dev
 ```
 
-The dev server starts at http://localhost:5173 with hot reload. API calls are proxied to port 8000.
+The dev server starts at http://localhost:3000 with hot reload. API calls are proxied to port 8000.
 
 ### Build for Production
 
@@ -378,20 +351,16 @@ ai-radio-dj/
 │   ├── routers/                 # API endpoints
 │   │   ├── shows.py             #   Show schedule management
 │   │   ├── talk_shows.py        #   Talk config & topics
-│   │   ├── calls.py             #   Call-in management & webhooks
 │   │   └── ...                  #   Styles, DJ, dashboard, etc.
 │   ├── providers/               # AI service integrations
 │   │   ├── music/suno.py        #   Music generation
 │   │   ├── scriptwriter/google.py  # DJ scripts + talk segments
-│   │   ├── voice/fish.py        #   Text-to-speech
-│   │   ├── telephony/twilio.py  #   Phone call handling
-│   │   └── conversation/openai_realtime.py  # Real-time caller AI
+│   │   └── voice/fish.py        #   Text-to-speech
 │   ├── engine/                  # Core station logic
 │   │   ├── scheduler.py         #   Show-aware master orchestrator
 │   │   ├── music_buffer.py      #   Track queue manager
 │   │   ├── dj_brain.py          #   DJ break timing & context
 │   │   ├── talk_show.py         #   Talk segment generation engine
-│   │   ├── call_manager.py      #   Incoming call lifecycle
 │   │   └── playout.py           #   Liquidsoap interface
 │   ├── events/                  # Real-time event system
 │   └── utils/                   # Audio processing, rate limiting
@@ -399,15 +368,14 @@ ai-radio-dj/
 │   ├── pages/
 │   │   ├── Shows.jsx            #   Show schedule management
 │   │   ├── TalkShowConfig.jsx   #   Talk host/topic config
-│   │   ├── CallDashboard.jsx    #   Live call management
 │   │   └── ...                  #   Dashboard, Styles, DJ, etc.
-├── liquidsoap/station.liq       # Audio playout config (with harbor input)
+├── liquidsoap/station.liq       # Audio playout config
 ├── icecast/icecast.xml          # Stream server config
+├── data/                        # Station database (created on first run)
 ├── audio/                       # All audio files
 │   ├── tracks/                  #   Generated music
 │   ├── breaks/                  #   DJ break audio
 │   ├── talks/                   #   Talk show segments
-│   ├── calls/                   #   Call recordings (raw + processed)
 │   ├── fallback/                #   Emergency audio
 │   └── archive/                 #   Played tracks
 └── docs/                        # Documentation
@@ -458,20 +426,9 @@ All endpoints are under `/api/`. The web dashboard uses these same endpoints.
 | DELETE | `/api/talk/topics/{id}` | Delete a topic |
 | GET | `/api/talk/segments` | List generated talk segments |
 | POST | `/api/talk/preview` | Generate a preview talk segment |
-| **Calls** | | |
-| GET | `/api/calls/config` | Get call-in configuration |
-| PUT | `/api/calls/config` | Update call-in configuration |
-| GET | `/api/calls/active` | List active calls |
-| POST | `/api/calls/{id}/approve` | Approve a screened call |
-| POST | `/api/calls/{id}/reject` | Reject a call |
-| POST | `/api/calls/{id}/end` | End an active call |
-| GET | `/api/calls/history` | Call history |
-| GET | `/api/calls/status` | Telephony provider status |
-| POST | `/api/calls/webhook` | Twilio incoming call webhook |
-| POST | `/api/calls/status-callback` | Twilio status callback |
 | **Dashboard** | | |
-| GET | `/api/dashboard/status` | Current station status (includes active show, call count) |
-| GET | `/api/dashboard/health` | AI service health check (includes telephony, conversation AI) |
+| GET | `/api/dashboard/status` | Current station status (includes active show) |
+| GET | `/api/dashboard/health` | AI service health check |
 | GET | `/api/dashboard/recent` | Recently played items |
 | WS | `/api/dashboard/ws` | Real-time status updates |
 | **Play Log** | | |
@@ -491,8 +448,6 @@ All endpoints are under `/api/`. The web dashboard uses these same endpoints.
 | Music AI | Suno API |
 | Script AI | Google Gemini API |
 | Voice AI | Fish Audio API |
-| Telephony | Twilio *(optional)* |
-| Conversation AI | OpenAI Realtime API *(optional)* |
 | Audio Processing | FFmpeg |
 | Audio Playout | Liquidsoap 2.2 |
 | Live Streaming | Icecast 2.4 |
@@ -500,7 +455,18 @@ All endpoints are under `/api/`. The web dashboard uses these same endpoints.
 
 ---
 
-## 13. Further Reading
+## 13. Security
+
+A few things to know before running the station anywhere other than your own machine:
+
+- **The control API is unauthenticated.** Anyone who can reach port 8000 can reconfigure your station, read your play history, and trigger paid AI generations. On a shared or public network, bind the port to localhost (change the compose mapping to `"127.0.0.1:8000:8000"`) or put a firewall / reverse proxy with authentication in front of it.
+- **Change the default passwords.** Set real values for `ICECAST_SOURCE_PASSWORD`, `ICECAST_ADMIN_PASSWORD`, and `HARBOR_SOURCE_PASSWORD` in `.env` — the `hackme` defaults are placeholders. Anyone with the source password can hijack your stream.
+- **Only the stream needs to be public.** Port 8080 (Icecast) is the only thing listeners need. Liquidsoap's telnet and harbor ports are intentionally not published outside the Docker network.
+- **`.env` holds your API keys.** It is ignored by git — keep it that way, and don't paste it into bug reports.
+
+---
+
+## 14. Further Reading
 
 - **[Getting Started Guide](docs/quickstart.md)** — Detailed walkthrough from zero to a running station
 - **[Configuration Reference](docs/configuration.md)** — Every setting explained
@@ -510,6 +476,6 @@ All endpoints are under `/api/`. The web dashboard uses these same endpoints.
 
 ---
 
-## 14. License
+## 15. License
 
 MIT — Use it however you like.

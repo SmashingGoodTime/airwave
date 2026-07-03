@@ -6,7 +6,7 @@ from typing import Literal, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,7 @@ from server.database import get_session
 from server.models.dj_config import DJConfig
 from server.models.station import Station
 from server.providers.registry import ProviderRegistry
+from server.utils.timeutils import to_utc_iso, utcnow_naive
 
 router = APIRouter(prefix="/api/dj", tags=["dj"])
 
@@ -40,6 +41,10 @@ class DJConfigResponse(BaseModel):
     updated_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("updated_at")
+    def _serialize_dt(self, value: Optional[datetime]) -> Optional[str]:
+        return to_utc_iso(value)
 
 
 class DJConfigCreate(BaseModel):
@@ -87,6 +92,30 @@ class DJPreviewRequest(BaseModel):
     voice_provider: Optional[str] = None
 
 
+async def _load_default_config(session: AsyncSession) -> Optional[DJConfig]:
+    """Load the default DJ configuration, falling back to the oldest config.
+
+    Args:
+        session: Async database session.
+
+    Returns:
+        The default (or first-created) DJ config, or None if none exists.
+    """
+    result = await session.execute(
+        select(DJConfig)
+        .where(DJConfig.is_default.is_(True))
+        .order_by(DJConfig.id)
+        .limit(1)
+    )
+    config = result.scalar_one_or_none()
+    if config is None:
+        result = await session.execute(
+            select(DJConfig).order_by(DJConfig.id).limit(1)
+        )
+        config = result.scalar_one_or_none()
+    return config
+
+
 @router.get("/config", response_model=DJConfigResponse)
 async def get_dj_config(
     session: AsyncSession = Depends(get_session),
@@ -99,14 +128,7 @@ async def get_dj_config(
     Returns:
         The current DJ config or defaults if none exists.
     """
-    result = await session.execute(
-        select(DJConfig).where(DJConfig.is_default.is_(True)).limit(1)
-    )
-    config = result.scalar_one_or_none()
-    if config is None:
-        # Fall back to any config
-        result = await session.execute(select(DJConfig).limit(1))
-        config = result.scalar_one_or_none()
+    config = await _load_default_config(session)
     if config is None:
         return DJConfigResponse()
     return DJConfigResponse.model_validate(config)
@@ -126,13 +148,7 @@ async def update_dj_config(
     Returns:
         The updated DJ config.
     """
-    result = await session.execute(
-        select(DJConfig).where(DJConfig.is_default.is_(True)).limit(1)
-    )
-    config = result.scalar_one_or_none()
-    if config is None:
-        result = await session.execute(select(DJConfig).limit(1))
-        config = result.scalar_one_or_none()
+    config = await _load_default_config(session)
 
     if config is None:
         config = DJConfig(is_default=True)
@@ -141,15 +157,17 @@ async def update_dj_config(
     update_data = body.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(config, key, value)
-    config.updated_at = datetime.now(timezone.utc)
+    config.updated_at = utcnow_naive()
 
-    # Switch active voice provider in registry if changed
+    await session.commit()
+    await session.refresh(config)
+
+    # Switch active voice provider only after the change is durably saved,
+    # so a failed commit cannot leave the registry out of sync with the DB.
     if "voice_provider" in update_data and update_data["voice_provider"]:
         registry = ProviderRegistry.get_instance()
         registry.set_active_voice_provider(update_data["voice_provider"])
 
-    await session.commit()
-    await session.refresh(config)
     return DJConfigResponse.model_validate(config)
 
 
@@ -244,14 +262,16 @@ async def update_dj_config_by_id(
     update_data = body.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(config, key, value)
-    config.updated_at = datetime.now(timezone.utc)
+    config.updated_at = utcnow_naive()
 
+    await session.commit()
+    await session.refresh(config)
+
+    # Registry switch happens only after a successful commit (see PUT /config).
     if "voice_provider" in update_data and update_data["voice_provider"]:
         registry = ProviderRegistry.get_instance()
         registry.set_active_voice_provider(update_data["voice_provider"])
 
-    await session.commit()
-    await session.refresh(config)
     return config
 
 
@@ -372,12 +392,11 @@ async def preview_dj_break(
     if scriptwriter is None:
         return {"script": None, "audio_url": None, "error": "No scriptwriter provider configured"}
 
-    # Load DJ config for context
-    result = await session.execute(select(DJConfig).limit(1))
-    config = result.scalar_one_or_none()
+    # Load DJ config for context (same default-first resolution as GET /config)
+    config = await _load_default_config(session)
 
     # Convert to station timezone
-    station_result = await session.execute(select(Station).limit(1))
+    station_result = await session.execute(select(Station).order_by(Station.id).limit(1))
     station = station_result.scalar_one_or_none()
     station_tz_str = station.timezone if station and station.timezone else "UTC"
     try:

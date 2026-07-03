@@ -44,6 +44,14 @@ function useAudioAnalyser(streamUrl) {
   const connect = useCallback(async () => {
     if (!streamUrl || connected) return
 
+    // Never allocate a new AudioContext while a previous one is still open.
+    if (ctxRef.current && ctxRef.current.state !== 'closed') {
+      ctxRef.current.close().catch(() => {})
+      ctxRef.current = null
+      analyserRef.current = null
+      sourceRef.current = null
+    }
+
     try {
       const audio = new Audio()
       audio.crossOrigin = 'anonymous'
@@ -68,6 +76,13 @@ function useAudioAnalyser(streamUrl) {
       setPlaying(true)
     } catch (err) {
       console.warn('Audio analyser connection failed:', err.message)
+      // Release the AudioContext created above before falling back.
+      if (ctxRef.current && ctxRef.current.state !== 'closed') {
+        ctxRef.current.close().catch(() => {})
+      }
+      ctxRef.current = null
+      analyserRef.current = null
+      sourceRef.current = null
       try {
         const audio = audioRef.current || new Audio()
         if (!audioRef.current) {
@@ -595,17 +610,18 @@ function Visualizer() {
   useEffect(() => {
     if (hasLiveData) return
     var id = setInterval(function() {
-      setContentMode(function(m) {
-        if (m === 'track') {
-          // Reset elapsed for demo track when switching back
-          return 'break'
-        }
-        setTrackInfo({ title: 'Digital Horizons', style_name: 'Synthwave', elapsed: 0, duration: 210 })
-        return 'track'
-      })
+      setContentMode(function(m) { return m === 'track' ? 'break' : 'track' })
     }, 20000) // Switch every 20s in demo
     return function() { clearInterval(id) }
   }, [hasLiveData])
+
+  // Demo mode: reset the demo track whenever the cycle returns to 'track'
+  useEffect(() => {
+    if (hasLiveData) return
+    if (contentMode === 'track') {
+      setTrackInfo({ title: 'Digital Horizons', style_name: 'Synthwave', elapsed: 0, duration: 210 })
+    }
+  }, [hasLiveData, contentMode])
 
   // Auto-cycle visualization modes
   useEffect(() => {

@@ -3,6 +3,7 @@ import {
   fetchDJConfigs, createDJConfigEntry, updateDJConfigEntry, deleteDJConfigEntry,
   setDefaultDJConfig, previewDJBreak, fetchVoices, fetchVoiceProviders,
 } from '../api'
+import useVoiceSample from '../hooks/useVoiceSample'
 
 const EXAMPLE_PERSONALITY = `You're a warm, friendly DJ with a laid-back vibe. You love discovering new music and sharing fun facts. You speak casually like you're talking to a friend — never stiff or formal. You occasionally make gentle jokes and always keep the energy positive. You like to comment on the mood of the music and what time of day it is.`
 
@@ -36,58 +37,13 @@ function DJConfig() {
   const [previewing, setPreviewing] = useState(false)
   const [showPolicySuffix, setShowPolicySuffix] = useState(false)
   const [isNew, setIsNew] = useState(false)
+  const [activeVoiceProvider, setActiveVoiceProvider] = useState('fish_audio')
 
-  // Voice sample player state
-  const [playingId, setPlayingId] = useState(null)
-  const [audioElement, setAudioElement] = useState(null)
-  const [loadingSample, setLoadingSample] = useState(false)
-
-  useEffect(() => {
-    return () => {
-      if (audioElement) {
-        audioElement.pause()
-      }
-    }
-  }, [audioElement])
-
-  const playSample = async (voiceId) => {
-    if (!voiceId) return
-    if (playingId === voiceId && audioElement) {
-      audioElement.pause()
-      setPlayingId(null)
-      return
-    }
-    if (audioElement) {
-      audioElement.pause()
-    }
-    const voice = voices.find(v => v.voice_id === voiceId)
-    let url = voice?.sample_url
-
-    if (!url) {
-      setLoadingSample(true)
-      try {
-        const res = await previewDJBreak({ voice_id: voiceId, voice_provider: 'fish_audio' })
-        url = res.audio_url
-      } catch (err) {
-        alert(`Failed to generate sample: ${err.message}`)
-        setLoadingSample(false)
-        return
-      }
-      setLoadingSample(false)
-    }
-
-    if (url) {
-      const audio = new Audio(url)
-      setAudioElement(audio)
-      setPlayingId(voiceId)
-      audio.play()
-      audio.onended = () => setPlayingId(null)
-      audio.onerror = () => {
-        setPlayingId(null)
-        alert("Error playing sample audio.")
-      }
-    }
-  }
+  const { playingId, loadingSample, playSample } = useVoiceSample({
+    voices,
+    provider: activeVoiceProvider,
+    onError: (msg) => setError(msg),
+  })
 
   async function loadVoices(provider = 'fish_audio') {
     setVoicesLoading(true)
@@ -114,6 +70,7 @@ function DJConfig() {
         const active = providers.find(p => p.active)
         if (active) activeProvider = active.key
       }
+      setActiveVoiceProvider(activeProvider)
       if (cfgs.status === 'fulfilled') {
         const list = cfgs.value || []
         setConfigs(list)
@@ -123,7 +80,7 @@ function DJConfig() {
           selectConfig(def, activeProvider)
         }
       }
-      await loadVoices('fish_audio')
+      await loadVoices(activeProvider)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -139,7 +96,7 @@ function DJConfig() {
       station_name: cfg.station_name || '',
       dj_name: cfg.dj_name || '',
       personality_prompt: cfg.personality_prompt || '',
-      voice_provider: 'fish_audio',
+      voice_provider: cfg.voice_provider || defaultProvider || activeVoiceProvider,
       voice_id: cfg.voice_id || '',
       voice_settings: cfg.voice_settings || '',
       break_frequency: cfg.break_frequency ?? 4,
@@ -157,7 +114,7 @@ function DJConfig() {
   function handleNew() {
     setSelectedId(null)
     setIsNew(true)
-    setForm({ ...EMPTY_CONFIG })
+    setForm({ ...EMPTY_CONFIG, voice_provider: activeVoiceProvider })
     setShowPolicySuffix(false)
     setPreview(null)
   }

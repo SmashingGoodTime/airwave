@@ -14,7 +14,10 @@ import server.models  # noqa: F401 - load model metadata
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: init_db() runs migrations during app
+    # startup, and the default (True) would silently disable every logger
+    # already configured by the app (engine, providers, etc.).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

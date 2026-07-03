@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import StaticPool
 
 # Force test database before any app imports
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite://"
@@ -109,8 +110,21 @@ def event_loop():
 
 @pytest_asyncio.fixture
 async def engine() -> AsyncGenerator[AsyncEngine, None]:
-    """Create a fresh in-memory SQLite engine per test."""
-    eng = create_async_engine("sqlite+aiosqlite://", echo=False)
+    """Create a fresh in-memory SQLite engine per test.
+
+    ``StaticPool`` makes every session share the one underlying connection,
+    so all sessions see the same in-memory database. Without it aiosqlite
+    hands out a fresh, empty ``:memory:`` database per connection, and the
+    engine's separate-session timeline updates land in a database the test's
+    own session can't see (a real file/WAL database shares across
+    connections, so this only bites in-memory tests).
+    """
+    eng = create_async_engine(
+        "sqlite+aiosqlite://",
+        echo=False,
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield eng

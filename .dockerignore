@@ -3,6 +3,7 @@ __pycache__
 .pytest_cache
 .env
 radio.db
+data/
 audio/tracks/
 audio/breaks/
 audio/archive/

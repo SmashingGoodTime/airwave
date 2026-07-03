@@ -1,11 +1,10 @@
 """Show schedule management API endpoints."""
 
-import json
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +12,7 @@ from server.database import get_session
 from server.models.show import Show
 from server.models.show_style import show_styles
 from server.models.station import Station
+from server.utils.timeutils import to_utc_iso
 
 router = APIRouter(prefix="/api/shows", tags=["shows"])
 
@@ -59,6 +59,10 @@ class ShowResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("created_at", "updated_at")
+    def _serialize_dt(self, value: Optional[datetime]) -> Optional[str]:
+        return to_utc_iso(value)
 
 
 async def _get_style_ids(session: AsyncSession, show_id: int) -> list[int]:
@@ -209,7 +213,7 @@ async def get_active_show(
     Returns:
         The active show, or None.
     """
-    station_result = await session.execute(select(Station).limit(1))
+    station_result = await session.execute(select(Station).order_by(Station.id).limit(1))
     station = station_result.scalar_one_or_none()
 
     if station and station.current_show_id:

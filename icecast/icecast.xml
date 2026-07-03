@@ -13,8 +13,11 @@
         <burst-size>65535</burst-size>
     </limits>
 
-    <!-- SECURITY: Change these passwords before deploying to production! -->
-    <!-- Set ICECAST_SOURCE_PASSWORD and ICECAST_ADMIN_PASSWORD in your .env file -->
+    <!-- SECURITY: The values below are placeholders. At container start,
+         docker-compose copies this file into place and the image entrypoint
+         replaces source-password and admin-password with the
+         ICECAST_SOURCE_PASSWORD and ICECAST_ADMIN_PASSWORD values from your
+         .env file. Set real passwords there before deploying. -->
     <authentication>
         <source-password>hackme</source-password>
         <relay-password>hackme</relay-password>
@@ -54,7 +57,8 @@
 
     <logging>
         <accesslog>access.log</accesslog>
-        <errorlog>error.log</errorlog>
+        <!-- "-" sends the error log to stderr so `docker logs` captures it -->
+        <errorlog>-</errorlog>
         <loglevel>3</loglevel>
         <logsize>10000</logsize>
     </logging>

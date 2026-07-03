@@ -38,20 +38,24 @@ class FakePlayout:
         """Pretend Liquidsoap is ready for startup tests."""
         return True
 
-    async def queue_track(self, filepath: str) -> bool:
-        """Record a queued track path."""
+    async def queue_track(
+        self, filepath: str, *, title: str | None = None, artist: str | None = None
+    ) -> bool:
+        """Record a queued track path and its annotated metadata."""
         self.queued_tracks.append(filepath)
+        if title is not None or artist is not None:
+            self.metadata_updates.append((title or "", artist or "AI Radio"))
         return True
 
-    async def queue_break(self, filepath: str) -> bool:
+    async def queue_break(self, filepath: str, *, title: str | None = None) -> bool:
         """Record a queued DJ break path."""
         self.queued_breaks.append(filepath)
         return True
 
     async def update_metadata(self, title: str, artist: str = "AI Radio") -> bool:
-        """Record metadata updates."""
+        """Deprecated stub retained for backward-compatibility tests."""
         self.metadata_updates.append((title, artist))
-        return True
+        return False
 
 
 def make_scheduler(fake_playout: FakePlayout | None = None) -> MasterScheduler:
@@ -822,3 +826,37 @@ async def test_cleanup_archives_played_tracks_and_marks_stale_playing(
     assert archived_path.exists()
     assert not audio_file.exists()
     assert stale.status == "played"
+
+
+@pytest.mark.asyncio
+async def test_reap_stuck_generations_fails_old_rows(db_session, monkeypatch):
+    """Rows stuck in a transient state past the max age are marked failed."""
+    from datetime import timedelta
+    from server.engine.scheduler import STUCK_GENERATION_MAX_AGE
+    from server.models.generation_job import GenerationJob
+    from server.utils.timeutils import utcnow_naive
+
+    old = utcnow_naive() - STUCK_GENERATION_MAX_AGE - timedelta(minutes=5)
+    recent = utcnow_naive()
+
+    stuck_track = Track(status="generating", created_at=old)
+    fresh_track = Track(status="generating", created_at=recent)
+    stuck_break = DJBreak(status="generating", script_text="x", created_at=old)
+    stuck_job = GenerationJob(job_type="music", status="running", created_at=old)
+    fresh_job = GenerationJob(job_type="music", status="running", created_at=recent)
+    db_session.add_all([stuck_track, fresh_track, stuck_break, stuck_job, fresh_job])
+    await db_session.commit()
+
+    scheduler = make_scheduler()
+    await scheduler._reap_stuck_generations(db_session)
+
+    for row in (stuck_track, fresh_track, stuck_break, stuck_job, fresh_job):
+        await db_session.refresh(row)
+
+    assert stuck_track.status == "failed"
+    assert stuck_break.status == "failed"
+    assert stuck_job.status == "failed"
+    assert stuck_job.finished_at is not None
+    # Recent rows are left alone to finish.
+    assert fresh_track.status == "generating"
+    assert fresh_job.status == "running"

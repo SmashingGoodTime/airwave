@@ -75,7 +75,7 @@ function App() {
   useEffect(() => {
     fetchSetupStatus()
       .then((data) => {
-        setSetupComplete(data.setup_complete)
+        setSetupComplete(!!data.setup_complete)
       })
       .catch(() => {
         setSetupComplete(false)
@@ -86,7 +86,15 @@ function App() {
       .catch(() => {})
   }, [])
 
-  if (loading) {
+  function handleSetupComplete() {
+    // Unblock routing immediately, then confirm with the server.
+    setSetupComplete(true)
+    fetchSetupStatus()
+      .then((data) => setSetupComplete(!!data.setup_complete))
+      .catch(() => {})
+  }
+
+  if (loading || setupComplete === null) {
     return (
       <div className="loading-screen">
         <div className="loading-spinner" />
@@ -95,14 +103,23 @@ function App() {
     )
   }
 
+  if (!setupComplete) {
+    return (
+      <Routes>
+        <Route path="/setup" element={
+          <div className="setup-page">
+            <Setup onComplete={handleSetupComplete} />
+          </div>
+        } />
+        <Route path="*" element={<Navigate to="/setup" replace />} />
+      </Routes>
+    )
+  }
+
   return (
     <Routes>
       <Route path="/visualizer" element={<ErrorBoundary><Visualizer /></ErrorBoundary>} />
-      <Route path="/setup" element={
-        <div className="setup-page">
-          <Setup onComplete={() => setSetupComplete(true)} />
-        </div>
-      } />
+      <Route path="/setup" element={<Navigate to="/" replace />} />
       <Route path="*" element={
         <div className="app-layout">
           <button className="mobile-menu-btn" onClick={() => setMobileMenuOpen(!mobileMenuOpen)} aria-label="Toggle menu">

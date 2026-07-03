@@ -21,6 +21,7 @@ function Shows() {
   const [shows, setShows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [modalError, setModalError] = useState(null)
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({
@@ -82,6 +83,7 @@ function Shows() {
       dj_config_id: '',
       style_ids: []
     })
+    setModalError(null)
     setShowModal(true)
     loadModalData()
   }
@@ -97,6 +99,7 @@ function Shows() {
       dj_config_id: show.dj_config_id || '',
       style_ids: show.style_ids || []
     })
+    setModalError(null)
     setShowModal(true)
     loadModalData()
   }
@@ -119,7 +122,7 @@ function Shows() {
       setShowModal(false)
       load()
     } catch (err) {
-      setError(err.message)
+      setModalError(err.message)
     }
   }
 
@@ -307,6 +310,7 @@ function Shows() {
               <h3>{editing ? 'Edit Program Block' : 'New Program Block'}</h3>
               <button className="modal-close" onClick={() => setShowModal(false)}>&times;</button>
             </div>
+            {modalError && <div className="alert alert-error">{modalError}</div>}
             <form onSubmit={handleSubmit}>
               <div className="form-group">
                 <label className="form-label">Program Name</label>

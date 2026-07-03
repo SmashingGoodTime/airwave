@@ -81,6 +81,15 @@ function Dashboard() {
   const wsRef = useRef(null)
   const reconnectTimer = useRef(null)
   const fallbackInterval = useRef(null)
+  const wsClosedRef = useRef(false)
+  // Timestamp until which a manual-action error must not be cleared by background refreshes.
+  const actionErrorUntilRef = useRef(0)
+  const countdownReloadedRef = useRef(false)
+
+  function setActionError(message) {
+    actionErrorUntilRef.current = Date.now() + 8000
+    setError(message)
+  }
 
   async function loadData() {
     try {
@@ -146,7 +155,16 @@ function Dashboard() {
           }
         }
       }
-      setError(null)
+
+      // The dashboard is effectively down when its core fetches fail together.
+      const criticalResults = [statusData, streamStatusData]
+      const criticalFailures = criticalResults.filter(r => r.status === 'rejected')
+      if (criticalFailures.length === criticalResults.length) {
+        setError(`Dashboard unavailable: ${criticalFailures[0].reason?.message || 'request failed'}`)
+      } else if (Date.now() >= actionErrorUntilRef.current) {
+        // Keep recent manual-action errors visible for a few seconds.
+        setError(null)
+      }
     } catch (err) {
       setError(err.message)
     } finally {
@@ -158,6 +176,7 @@ function Dashboard() {
   loadDataRef.current = loadData
 
   const connectWebSocket = useCallback(() => {
+    if (wsClosedRef.current) return
     if (wsRef.current?.readyState === WebSocket.OPEN) return
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -213,8 +232,10 @@ function Dashboard() {
       }
 
       ws.onclose = () => {
+        if (wsClosedRef.current) return
         setWsConnected(false)
         wsRef.current = null
+        if (reconnectTimer.current) clearTimeout(reconnectTimer.current)
         reconnectTimer.current = setTimeout(connectWebSocket, 5000)
         if (!fallbackInterval.current) {
           fallbackInterval.current = setInterval(() => loadDataRef.current(), 15000)
@@ -230,17 +251,33 @@ function Dashboard() {
   }, [])
 
   useEffect(() => {
+    wsClosedRef.current = false
     loadData()
     connectWebSocket()
     fetchStreamUrl().then(data => setStreamUrl(data?.url || null)).catch(() => {})
     return () => {
-      if (wsRef.current) wsRef.current.close()
-      if (reconnectTimer.current) clearTimeout(reconnectTimer.current)
-      if (fallbackInterval.current) clearInterval(fallbackInterval.current)
+      wsClosedRef.current = true
+      if (reconnectTimer.current) {
+        clearTimeout(reconnectTimer.current)
+        reconnectTimer.current = null
+      }
+      if (fallbackInterval.current) {
+        clearInterval(fallbackInterval.current)
+        fallbackInterval.current = null
+      }
+      if (wsRef.current) {
+        wsRef.current.onclose = null
+        wsRef.current.onerror = null
+        wsRef.current.close()
+        wsRef.current = null
+      }
     }
   }, [connectWebSocket])
 
   useEffect(() => {
+    // New show start (or countdown restart) re-arms the expiry reload latch.
+    countdownReloadedRef.current = false
+
     if (broadcastMode !== 'scheduled' || !streaming || !currentShowStartedAt) {
       setTimeLeft(null)
       return
@@ -254,7 +291,10 @@ function Dashboard() {
       const minutes = Math.floor(totalSecs / 60)
       const seconds = totalSecs % 60
       setTimeLeft(`${minutes}:${String(seconds).padStart(2, '0')}`)
-      if (remaining <= 0) loadDataRef.current()
+      if (remaining <= 0 && !countdownReloadedRef.current) {
+        countdownReloadedRef.current = true
+        loadDataRef.current()
+      }
     }
 
     tick()
@@ -295,7 +335,7 @@ function Dashboard() {
       setError(null)
       loadData()
     } catch (err) {
-      setError(err.message)
+      setActionError(err.message)
     } finally {
       setStreamingAction(false)
     }
@@ -316,7 +356,7 @@ function Dashboard() {
       setError(null)
       loadData()
     } catch (err) {
-      setError(err.message)
+      setActionError(err.message)
     } finally {
       setStreamingAction(false)
     }
@@ -340,7 +380,7 @@ function Dashboard() {
       setError(null)
       loadData()
     } catch (err) {
-      setError(err.message)
+      setActionError(err.message)
     } finally {
       setStreamingAction(false)
     }
@@ -362,7 +402,7 @@ function Dashboard() {
       setError(null)
       loadData()
     } catch (err) {
-      setError(err.message)
+      setActionError(err.message)
     } finally {
       setStreamingAction(false)
     }
@@ -380,7 +420,7 @@ function Dashboard() {
       setError(null)
       loadData()
     } catch (err) {
-      setError(err.message)
+      setActionError(err.message)
     } finally {
       setStreamingAction(false)
     }

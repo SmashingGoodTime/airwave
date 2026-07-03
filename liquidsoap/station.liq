@@ -14,11 +14,29 @@ settings.server.telnet.port.set(1234)
 settings.log.level.set(3)
 
 # =====================
+# Secrets (from docker-compose environment)
+# =====================
+icecast_password = environment.get(default="hackme", "ICECAST_SOURCE_PASSWORD")
+# Deliberately NOT "hackme": if the compose env var is absent, the harbor
+# must not accept the well-known Liquidsoap default password.
+harbor_password = environment.get(default="airadio-caller-secret", "HARBOR_SOURCE_PASSWORD")
+
+# =====================
 # Request Queue
 # =====================
 # The app pushes tracks and DJ breaks into this queue via telnet.
-# "queue.push <filepath>" adds an item; items play in FIFO order.
+# request.queue(id="queue") registers exactly these server commands:
+#   queue.push / queue.queue / queue.skip / queue.flush_and_skip
+# Now-playing metadata arrives on each request via annotate: URIs
+# (title/artist), added by the app at queue time.
 queue = request.queue(id="queue")
+
+# Silent-track protection: if a corrupt or all-silent file reaches the
+# queue, skip it after 15s of continuous silence instead of airing dead
+# air. Threshold -50dB matches the audio pipeline's silence-trim floor,
+# so quiet-but-intentional ambient material is not skipped; DJ speech
+# pauses never approach 15s.
+queue = blank.skip(id="queue_blank_skip", threshold=-50.0, max_blank=15.0, queue)
 
 # =====================
 # Fallback Source
@@ -32,29 +50,69 @@ fallback_src = playlist(
   "/audio/fallback/"
 )
 
-# Silence as last resort
-silence_src = blank(id="silence", duration=1.0)
+# Silence as last resort. Default blank duration is -1 (a single endless
+# track): a bounded duration would end a "track" every few seconds and
+# make cross() churn through transitions while everything is empty.
+silence_src = blank(id="silence")
 
 # =====================
 # Live Caller Input
 # =====================
-# Harbor input for live caller audio. The Python app bridges
-# Twilio WebSocket audio to this endpoint for live on-air calls.
+# Harbor input for live caller audio. The Python app bridges Twilio
+# WebSocket audio to this endpoint for live on-air calls.
+#
+# The input only goes on air when caller_enabled is true. The app toggles
+# it with the custom telnet commands below ("caller.set true|false"),
+# registered via server.register (harbor inputs register no start/stop
+# telnet commands of their own in 2.2.x).
+caller_enabled = ref(false)
+
+server.register(
+  namespace="caller",
+  description="Enable or disable the live caller input.",
+  usage="set true|false",
+  "set",
+  fun (arg) -> begin
+    if arg == "true" then
+      caller_enabled := true
+      "OK caller_enabled=true"
+    elsif arg == "false" then
+      caller_enabled := false
+      "OK caller_enabled=false"
+    else
+      "ERROR usage: caller.set true|false"
+    end
+  end
+)
+
+server.register(
+  namespace="caller",
+  description="Show whether the live caller input is enabled.",
+  "status",
+  fun (_) -> if caller_enabled() then "on" else "off" end
+)
+
 caller_input = input.harbor(
   id="caller",
   port=8005,
-  "/caller",
-  buffer=2.0
+  user="source",
+  password=harbor_password,
+  buffer=2.0,
+  "/caller"
 )
+
+# Gate the caller behind the enabled flag so a connected-but-unapproved
+# source can never take over the air.
+caller_live = source.available(id="caller_gated", caller_input, {caller_enabled()})
 
 # =====================
 # Source Chain
 # =====================
-# Priority: live caller > queue > fallback playlist > silence
+# Priority: live caller (when enabled) > queue > fallback playlist > silence
 radio = fallback(
   id="radio",
   track_sensitive=false,
-  [caller_input, queue, fallback_src, silence_src]
+  [caller_live, queue, fallback_src, silence_src]
 )
 
 # =====================
@@ -102,7 +160,9 @@ end)
 # Local Recording Output
 # =====================
 # Records the final mixed stream to hourly MP3 files.
-# Controlled via telnet: recorder.start / recorder.stop
+# start=false: nothing records until the app sends recorder.start.
+# register_telnet defaults to true, so this output registers the
+# recorder.start / recorder.stop / recorder.status telnet commands.
 # Files are saved as /audio/recordings/YYYY-MM-DD-HH.mp3
 rec_dir = "/audio/recordings/"
 
@@ -123,6 +183,7 @@ output.file(
   %mp3(bitrate=192),
   id="recorder",
   fallible=true,
+  start=false,
   reopen_on_error=fun(_) -> 1.0,
   reopen_when=should_reopen,
   {rec_dir ^ time.string("%Y-%m-%d-%H") ^ ".mp3"},
@@ -133,13 +194,15 @@ output.file(
 # Icecast Output
 # =====================
 # Stream to the Icecast server as MP3 at 192kbps.
-# The password, host, port, and mount are configured to match
-# the Icecast container in docker-compose.
+# id="radio_out" + register_telnet (default true) expose the output-level
+# telnet commands the app relies on: radio_out.skip / radio_out.metadata /
+# radio_out.remaining / radio_out.start / radio_out.stop / radio_out.status.
 output.icecast(
   %mp3(bitrate=192),
+  id="radio_out",
   host="icecast",
   port=8080,
-  password="hackme",
+  password=icecast_password,
   mount="/stream",
   name="AI Radio DJ",
   description="AI-powered radio station",

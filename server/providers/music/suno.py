@@ -9,6 +9,7 @@ See: https://docs.sunoapi.org
 
 import asyncio
 import logging
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -16,7 +17,11 @@ from typing import Optional
 import httpx
 
 from server.providers.base import MusicProvider
-from server.utils.rate_limiter import RateLimiter, retry_with_backoff
+from server.utils.rate_limiter import (
+    NonRetryableError,
+    RateLimiter,
+    retry_with_backoff,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +39,8 @@ _ERROR_STATUSES = {
 }
 
 POLL_INTERVAL = 15  # seconds between status polls
-POLL_TIMEOUT = 300  # 5 minutes max wait
+POLL_TIMEOUT = 300  # 5 minutes max wait (wall clock)
+MAX_POLL_FAILURES = 5  # consecutive transient poll failures tolerated
 
 
 class SunoMusicProvider(MusicProvider):
@@ -89,6 +95,10 @@ class SunoMusicProvider(MusicProvider):
         Submits a generation request, polls until complete, downloads
         the audio file, and returns metadata matching the provider contract.
 
+        Only the submit call is wrapped in a resubmitting retry — each
+        submission is a paid generation, so poll and download failures
+        retry against the SAME task instead of resubmitting.
+
         Args:
             prompt: Text description of the desired music style.
             duration: Target duration in seconds (informational; Suno
@@ -100,27 +110,47 @@ class SunoMusicProvider(MusicProvider):
 
         Raises:
             RuntimeError: If generation fails after retries.
+            NonRetryableError: On auth/credit failures that retrying
+                cannot fix.
         """
-        return await retry_with_backoff(
-            self._generate_impl,
+        # --- Submit (resubmit retry: this is the only paid call) ---
+        task_id = await retry_with_backoff(
+            self._submit_generation,
             prompt,
-            duration,
             max_retries=2,
             base_delay=30.0,
             max_delay=120.0,
             rate_limiter=self._rate_limiter,
-            operation_name="suno_music_generate",
+            operation_name="suno_music_submit",
         )
 
-    async def _generate_impl(self, prompt: str, duration: int) -> dict:
-        """Internal implementation: submit, poll, download.
+        # --- Poll (retries transient failures internally, same task_id) ---
+        song = await self._poll_until_complete(task_id)
+
+        # --- Download (own small retry; a failure here must never resubmit) ---
+        return await retry_with_backoff(
+            self._download_song,
+            song,
+            task_id,
+            prompt,
+            max_retries=2,
+            base_delay=5.0,
+            max_delay=30.0,
+            operation_name="suno_music_download",
+        )
+
+    async def _submit_generation(self, prompt: str) -> str:
+        """Submit a generation request and return its task ID.
 
         Args:
             prompt: Style description for the music.
-            duration: Target length in seconds.
 
         Returns:
-            A dict with generation result metadata and file path.
+            The Suno task ID string.
+
+        Raises:
+            NonRetryableError: On auth failures or insufficient credits.
+            RuntimeError: On transient submission failures.
         """
         client = self._get_client()
 
@@ -143,18 +173,22 @@ class SunoMusicProvider(MusicProvider):
             prompt[:80],
         )
 
-        # --- Submit ---
         response = await client.post("/api/v1/generate", json=payload)
 
         if response.status_code == 429:
+            # SunoAPI.org uses 429 for insufficient credits — retrying
+            # cannot fix an empty balance.
             logger.warning("Suno: insufficient credits")
-            self._rate_limiter.record_error()
-            raise RuntimeError("Suno: insufficient credits (429)")
+            raise NonRetryableError("Suno: insufficient credits (429)")
 
         if response.status_code == 430:
             logger.warning("Suno: rate limited (430)")
-            self._rate_limiter.record_error()
             raise RuntimeError("Suno: call frequency too high (430)")
+
+        if response.status_code in (400, 401, 403):
+            raise NonRetryableError(
+                f"Suno submit rejected: HTTP {response.status_code}"
+            )
 
         response.raise_for_status()
         submit_data = response.json()
@@ -164,13 +198,29 @@ class SunoMusicProvider(MusicProvider):
                 f"Suno submit error: {submit_data.get('msg', 'unknown')}"
             )
 
-        task_id = submit_data["data"]["taskId"]
+        task_id = (submit_data.get("data") or {}).get("taskId", "")
+        if not task_id:
+            raise RuntimeError("Suno submit response contained no taskId")
+
         logger.info("Suno task submitted: %s", task_id)
+        return task_id
 
-        # --- Poll ---
-        song = await self._poll_until_complete(client, task_id)
+    async def _download_song(
+        self, song: dict, task_id: str, prompt: str
+    ) -> dict:
+        """Download a completed song and build the provider result dict.
 
-        # --- Download ---
+        Args:
+            song: Song dict from the completed poll response.
+            task_id: The Suno generation task ID.
+            prompt: The original generation prompt.
+
+        Returns:
+            A dict with generation result metadata and file path.
+
+        Raises:
+            RuntimeError: If no audio URL is present or the download fails.
+        """
         audio_url = song.get("audioUrl") or song.get("audio_url")
         if not audio_url:
             raise RuntimeError("Suno returned no audio URL")
@@ -178,11 +228,14 @@ class SunoMusicProvider(MusicProvider):
         clip_id = uuid.uuid4().hex[:12]
         filepath = self._audio_dir / f"suno_{clip_id}.mp3"
 
-        async with client.stream("GET", audio_url) as dl:
-            dl.raise_for_status()
-            with open(filepath, "wb") as f:
-                async for chunk in dl.aiter_bytes(8192):
-                    f.write(chunk)
+        # The audio URL points at a CDN, not the Suno API — use a bare
+        # client so the API Bearer token is never sent to a third party.
+        async with self._download_client() as dl_client:
+            async with dl_client.stream("GET", audio_url) as dl:
+                dl.raise_for_status()
+                with open(filepath, "wb") as f:
+                    async for chunk in dl.aiter_bytes(8192):
+                        f.write(chunk)
 
         size_mb = filepath.stat().st_size / 1e6
         title = song.get("title", prompt[:60].strip())
@@ -215,13 +268,26 @@ class SunoMusicProvider(MusicProvider):
             },
         }
 
-    async def _poll_until_complete(
-        self, client: httpx.AsyncClient, task_id: str
-    ) -> dict:
+    def _download_client(self) -> httpx.AsyncClient:
+        """Create a bare HTTP client for downloading generated audio.
+
+        The client carries no Authorization header so the API key is never
+        leaked to the CDN host serving the audio file.
+
+        Returns:
+            A fresh httpx.AsyncClient intended for single-use download.
+        """
+        return httpx.AsyncClient(timeout=60.0, follow_redirects=True)
+
+    async def _poll_until_complete(self, task_id: str) -> dict:
         """Poll the Suno API until generation completes or times out.
 
+        Transient poll failures (network errors, 5xx) are retried against
+        the same task ID up to ``MAX_POLL_FAILURES`` consecutive times —
+        polling must never resubmit the paid generation. The deadline is
+        wall-clock so slow responses cannot stretch the cap.
+
         Args:
-            client: HTTP client to use.
             task_id: The generation task ID.
 
         Returns:
@@ -229,46 +295,66 @@ class SunoMusicProvider(MusicProvider):
 
         Raises:
             RuntimeError: On timeout or generation failure.
+            NonRetryableError: If polling is rejected for auth reasons.
         """
-        elapsed = 0.0
+        client = self._get_client()
+        deadline = time.monotonic() + POLL_TIMEOUT
+        consecutive_failures = 0
 
-        while elapsed < POLL_TIMEOUT:
+        while time.monotonic() < deadline:
             await asyncio.sleep(POLL_INTERVAL)
-            elapsed += POLL_INTERVAL
 
-            resp = await client.get(
-                "/api/v1/generate/record-info",
-                params={"taskId": task_id},
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            try:
+                resp = await client.get(
+                    "/api/v1/generate/record-info",
+                    params={"taskId": task_id},
+                )
+                if resp.status_code in (400, 401, 403):
+                    raise NonRetryableError(
+                        f"Suno poll rejected: HTTP {resp.status_code}"
+                    )
+                resp.raise_for_status()
+                data = resp.json()
+            except NonRetryableError:
+                raise
+            except (httpx.HTTPError, ValueError) as exc:
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_POLL_FAILURES:
+                    raise RuntimeError(
+                        f"Suno poll failed {consecutive_failures} consecutive "
+                        f"times for task {task_id}"
+                    ) from exc
+                logger.warning(
+                    "Suno poll attempt failed for task %s (%d/%d): %s",
+                    task_id,
+                    consecutive_failures,
+                    MAX_POLL_FAILURES,
+                    exc,
+                )
+                continue
+
+            consecutive_failures = 0
 
             if data.get("code") != 200:
                 raise RuntimeError(
                     f"Suno poll error: {data.get('msg', 'unknown')}"
                 )
 
-            status = data["data"].get("status", "")
+            # data can be null while the task is pending/unknown
+            task_data = data.get("data") or {}
+            status = task_data.get("status", "")
             logger.debug("Suno task %s status: %s", task_id, status)
 
             if status == "SUCCESS":
-                songs = (
-                    data["data"]
-                    .get("response", {})
-                    .get("taskId", data["data"].get("response", {}))
-                )
-                # Navigate to the sunoData array
-                suno_data = (
-                    data["data"]
-                    .get("response", {})
-                    .get("sunoData", [])
-                )
+                suno_data = (task_data.get("response") or {}).get(
+                    "sunoData"
+                ) or []
                 if not suno_data:
                     raise RuntimeError("Suno returned SUCCESS but no songs")
                 return suno_data[0]
 
             if status in _ERROR_STATUSES:
-                error_msg = data["data"].get("errorMessage", status)
+                error_msg = task_data.get("errorMessage", status)
                 raise RuntimeError(f"Suno generation failed: {error_msg}")
 
             if status not in _PENDING_STATUSES:
@@ -315,3 +401,9 @@ class SunoMusicProvider(MusicProvider):
             logger.warning("Suno health check failed: %s", exc)
             self._rate_limiter.record_error()
             return False
+
+    async def aclose(self) -> None:
+        """Close the underlying HTTP client and release its pool."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None

@@ -5,7 +5,15 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,8 +30,13 @@ from server.models.station import Station
 from server.models.talk_segment import TalkSegment
 from server.models.track import Track
 from server.providers.registry import ProviderRegistry
+from server.utils.timeutils import to_utc_iso
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
+
+# Cap on how many ready-asset files are checked per health request so the
+# filesystem sweep stays bounded as the asset table grows.
+ASSET_FILE_CHECK_LIMIT = 500
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +67,8 @@ async def get_dashboard_status(
             "title": playing.title,
             "duration": playing.duration,
             "style": playing.style_prompt,
-            "played_at": playing.played_at.isoformat() if playing.played_at else None,
-            "started_at": playing.played_at.isoformat() if playing.played_at else None,
+            "played_at": to_utc_iso(playing.played_at),
+            "started_at": to_utc_iso(playing.played_at),
         }
 
     # Buffer depth
@@ -79,7 +92,7 @@ async def get_dashboard_status(
     }
 
     # Active show
-    station_result = await session.execute(select(Station).limit(1))
+    station_result = await session.execute(select(Station).order_by(Station.id).limit(1))
     station = station_result.scalar_one_or_none()
     active_show = None
     active_show_info = None
@@ -161,15 +174,9 @@ async def get_recent_items(
                 "item_type": log.item_type,
                 "type": log.item_type,
                 "item_id": log.item_id,
-                "started_at": (
-                    log.started_at.isoformat() if log.started_at else None
-                ),
-                "played_at": (
-                    log.started_at.isoformat() if log.started_at else None
-                ),
-                "timestamp": (
-                    log.started_at.isoformat() if log.started_at else None
-                ),
+                "started_at": to_utc_iso(log.started_at),
+                "played_at": to_utc_iso(log.started_at),
+                "timestamp": to_utc_iso(log.started_at),
                 "duration": log.duration,
                 "title": metadata.get("title", ""),
             }
@@ -205,14 +212,10 @@ async def get_generation_jobs(
                 "output": _parse_json(job.output_json),
                 "output_asset_id": job.output_asset_id,
                 "error_message": job.error_message,
-                "scheduled_at": (
-                    job.scheduled_at.isoformat() if job.scheduled_at else None
-                ),
-                "started_at": job.started_at.isoformat() if job.started_at else None,
-                "finished_at": (
-                    job.finished_at.isoformat() if job.finished_at else None
-                ),
-                "created_at": job.created_at.isoformat() if job.created_at else None,
+                "scheduled_at": to_utc_iso(job.scheduled_at),
+                "started_at": to_utc_iso(job.started_at),
+                "finished_at": to_utc_iso(job.finished_at),
+                "created_at": to_utc_iso(job.created_at),
             }
         )
     return jobs
@@ -240,16 +243,20 @@ async def get_timeline_health(
         )
     ) or 0
 
+    # Bounded to the most recent assets so this endpoint stays fast as the
+    # asset table grows; the blocking stat() sweep runs off the event loop.
     asset_result = await session.execute(
-        select(AudioAsset).where(
+        select(AudioAsset.normalized_filepath)
+        .where(
             AudioAsset.status == "ready",
             AudioAsset.normalized_filepath.is_not(None),
         )
+        .order_by(AudioAsset.id.desc())
+        .limit(ASSET_FILE_CHECK_LIMIT)
     )
-    ready_assets_missing_files = sum(
-        1
-        for asset in asset_result.scalars().all()
-        if asset.normalized_filepath and not Path(asset.normalized_filepath).exists()
+    asset_paths = [row[0] for row in asset_result.all() if row[0]]
+    ready_assets_missing_files = await asyncio.to_thread(
+        _count_missing_files, asset_paths
     )
 
     recent_failed_jobs = await session.scalar(
@@ -340,17 +347,11 @@ async def get_timeline_items(
                 "source_table": item.source_table,
                 "source_id": item.source_id,
                 "audio_asset_id": item.audio_asset_id,
-                "planned_start_at": (
-                    item.planned_start_at.isoformat()
-                    if item.planned_start_at
-                    else None
-                ),
-                "queued_at": item.queued_at.isoformat() if item.queued_at else None,
-                "started_at": (
-                    item.started_at.isoformat() if item.started_at else None
-                ),
-                "ended_at": item.ended_at.isoformat() if item.ended_at else None,
-                "created_at": item.created_at.isoformat() if item.created_at else None,
+                "planned_start_at": to_utc_iso(item.planned_start_at),
+                "queued_at": to_utc_iso(item.queued_at),
+                "started_at": to_utc_iso(item.started_at),
+                "ended_at": to_utc_iso(item.ended_at),
+                "created_at": to_utc_iso(item.created_at),
                 "asset": (
                     {
                         "id": asset.id,
@@ -379,6 +380,11 @@ def _parse_json(value: str | None) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _count_missing_files(paths: list[str]) -> int:
+    """Count paths that do not exist on disk (blocking; run in a thread)."""
+    return sum(1 for path in paths if not Path(path).exists())
+
+
 async def _count_unmirrored(
     session: AsyncSession,
     model,
@@ -386,8 +392,9 @@ async def _count_unmirrored(
     source_table: str,
 ) -> int:
     """Count ready legacy rows without a matching ProgramItem mirror."""
-    result = await session.execute(
-        select(source_id_column)
+    count = await session.scalar(
+        select(func.count())
+        .select_from(model)
         .outerjoin(
             ProgramItem,
             (ProgramItem.source_table == source_table)
@@ -395,7 +402,7 @@ async def _count_unmirrored(
         )
         .where(model.status == "ready", ProgramItem.id.is_(None))
     )
-    return len(result.all())
+    return count or 0
 
 
 def _issue(code: str, count: int, message: str) -> dict | None:
@@ -432,14 +439,16 @@ async def dashboard_websocket(websocket: WebSocket) -> None:
     scheduler = getattr(websocket.app.state, "scheduler", None)
 
     try:
-        # Send initial status snapshot
+        # Send initial status snapshot via the per-client queue so it never
+        # interleaves with event-bus broadcast writes on the same socket.
         session_factory = get_session_factory()
         async with session_factory() as session:
             status = await _build_status_snapshot(session, scheduler)
-            await websocket.send_text(
+            event_bus.send_ws(
+                websocket,
                 json.dumps(
                     {"type": "status.snapshot", "data": status}, default=str
-                )
+                ),
             )
 
         # Keep alive with periodic status updates
@@ -452,11 +461,12 @@ async def dashboard_websocket(websocket: WebSocket) -> None:
                 try:
                     async with session_factory() as session:
                         status = await _build_status_snapshot(session, scheduler)
-                        await websocket.send_text(
+                        event_bus.send_ws(
+                            websocket,
                             json.dumps(
                                 {"type": "status.snapshot", "data": status},
                                 default=str,
-                            )
+                            ),
                         )
                 except Exception:
                     logger.debug("Error building status snapshot for WS")
@@ -490,12 +500,8 @@ async def _build_status_snapshot(session: AsyncSession, scheduler=None) -> dict:
             "title": playing.title,
             "duration": playing.duration,
             "style": playing.style_prompt,
-            "played_at": (
-                playing.played_at.isoformat() if playing.played_at else None
-            ),
-            "started_at": (
-                playing.played_at.isoformat() if playing.played_at else None
-            ),
+            "played_at": to_utc_iso(playing.played_at),
+            "started_at": to_utc_iso(playing.played_at),
         }
 
     result = await session.execute(
@@ -503,7 +509,7 @@ async def _build_status_snapshot(session: AsyncSession, scheduler=None) -> dict:
     )
     buffer_depth = result.scalar() or 0
 
-    station_result = await session.execute(select(Station).limit(1))
+    station_result = await session.execute(select(Station).order_by(Station.id).limit(1))
     station = station_result.scalar_one_or_none()
 
     streaming = scheduler.is_streaming if scheduler else False
@@ -540,7 +546,7 @@ async def get_track_lyrics(
     )
     track = result.scalar_one_or_none()
     if not track:
-        return {"track_id": track_id, "title": "", "lyrics": ""}
+        raise HTTPException(status_code=404, detail="Track not found")
     return {
         "track_id": track.id,
         "title": track.title or "",
@@ -567,7 +573,7 @@ async def get_break_script(
     )
     dj_break = result.scalar_one_or_none()
     if not dj_break:
-        return {"break_id": break_id, "script_text": "", "duration": 0}
+        raise HTTPException(status_code=404, detail="DJ break not found")
     return {
         "break_id": dj_break.id,
         "script_text": dj_break.script_text or "",

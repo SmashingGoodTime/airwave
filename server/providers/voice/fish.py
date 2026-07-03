@@ -15,7 +15,11 @@ from typing import Optional
 import httpx
 
 from server.providers.base import VoiceProvider
-from server.utils.rate_limiter import RateLimiter, retry_with_backoff
+from server.utils.rate_limiter import (
+    NonRetryableError,
+    RateLimiter,
+    retry_with_backoff,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -241,12 +245,11 @@ class FishAudioVoiceProvider(VoiceProvider):
 
             if response.status_code == 429:
                 logger.warning("Fish Audio TTS rate limited")
-                self._rate_limiter.record_error()
                 raise RuntimeError("Fish Audio TTS rate limited")
 
             if response.status_code == 402:
                 logger.error("Fish Audio TTS payment required — check account balance")
-                raise RuntimeError("Fish Audio TTS payment required")
+                raise NonRetryableError("Fish Audio TTS payment required")
 
             # Check for bad reference voice ID (400 Bad Request)
             if response.status_code == 400:
@@ -297,6 +300,10 @@ class FishAudioVoiceProvider(VoiceProvider):
                     f"Fish Audio TTS server error: {status}"
                 ) from exc
             logger.error("Fish Audio TTS API error: %s %s", status, body)
+            if status in (400, 401, 402, 403):
+                raise NonRetryableError(
+                    f"Fish Audio TTS API error: {status}"
+                ) from exc
             raise RuntimeError(
                 f"Fish Audio TTS API error: {status}"
             ) from exc
@@ -384,3 +391,9 @@ class FishAudioVoiceProvider(VoiceProvider):
             logger.warning("Fish Audio health check failed: %s", exc)
             self._rate_limiter.record_error()
             return False
+
+    async def aclose(self) -> None:
+        """Close the underlying HTTP client and release its pool."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None

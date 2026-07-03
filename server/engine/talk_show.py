@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.config import settings
 from server.engine.audio_pipeline import AudioPipeline
 from server.engine.generation_jobs import (
     fail_generation_job,
@@ -45,10 +46,10 @@ class TalkShowEngine:
     via VoiceProvider, and segment buffering for continuous playout.
     """
 
-    def __init__(self, audio_dir: str = "./audio") -> None:
+    def __init__(self, audio_dir: str | None = None) -> None:
         self._pipeline = AudioPipeline()
-        self._audio_dir = audio_dir
-        self._talks_dir = os.path.join(audio_dir, "talks")
+        self._audio_dir = audio_dir or settings.AUDIO_DIR
+        self._talks_dir = os.path.join(self._audio_dir, "talks")
         self._generating = False
         self._last_topic_id: int | None = None
 
@@ -94,6 +95,7 @@ class TalkShowEngine:
         show: Show,
         config: TalkShowConfig | None = None,
         topic_id: int | None = None,
+        preview: bool = False,
     ) -> TalkSegment | None:
         """Generate a single talk show segment.
 
@@ -105,6 +107,9 @@ class TalkShowEngine:
             show: The active show.
             config: Optional pre-loaded talk show config.
             topic_id: Optional specific topic to use, primarily for previews.
+            preview: If True, generate for preview only — do not increment
+                topic play counts, deactivate topics, mirror into the
+                program timeline, or affect topic rotation.
 
         Returns:
             The created TalkSegment, or None if generation failed.
@@ -118,6 +123,7 @@ class TalkShowEngine:
 
         self._generating = True
         job = None
+        segment: TalkSegment | None = None
         try:
             # Load talk config
             if config is None:
@@ -167,6 +173,10 @@ class TalkShowEngine:
 
             if not script_text:
                 logger.warning("Scriptwriter returned empty talk segment")
+                await fail_generation_job(
+                    session, job, "Scriptwriter returned empty talk segment"
+                )
+                await session.commit()
                 return None
 
             # Create segment record
@@ -197,7 +207,11 @@ class TalkShowEngine:
                 )
 
             if audio_path:
-                processed = await self._pipeline.process(audio_path, voice=True)
+                # The rendered (stitched) TTS audio is an intermediate
+                # file — delete it once processed.
+                processed = await self._pipeline.process(
+                    audio_path, voice=True, delete_source=True
+                )
                 segment.audio_filepath = processed["processed_path"]
                 segment.duration = processed["duration"]
                 segment.loudness_lufs = processed.get("loudness_lufs")
@@ -209,7 +223,11 @@ class TalkShowEngine:
                 segment.status = "ready"
                 logger.warning("No voice provider — talk segment has no audio")
 
-            timeline_item = await mirror_talk_segment_ready(session, segment)
+            # Previews never enter the program timeline
+            output_asset_id = None
+            if not preview:
+                timeline_item = await mirror_talk_segment_ready(session, segment)
+                output_asset_id = timeline_item.audio_asset_id
             await finish_generation_job(
                 session,
                 job,
@@ -218,19 +236,23 @@ class TalkShowEngine:
                     "topic": topic.title,
                     "segment_type": segment.segment_type,
                     "duration": segment.duration,
+                    "preview": preview,
                 },
-                output_asset_id=timeline_item.audio_asset_id,
+                output_asset_id=output_asset_id,
             )
             await session.commit()
 
-            # Update topic play count
-            topic.play_count += 1
-            if topic.max_plays and topic.play_count >= topic.max_plays:
-                topic.active = False
-                logger.info("Topic '%s' reached max plays, deactivated", topic.title)
-            await session.commit()
+            if not preview:
+                # Update topic play count
+                topic.play_count += 1
+                if topic.max_plays and topic.play_count >= topic.max_plays:
+                    topic.active = False
+                    logger.info(
+                        "Topic '%s' reached max plays, deactivated", topic.title
+                    )
+                await session.commit()
 
-            self._last_topic_id = topic.id
+                self._last_topic_id = topic.id
 
             event_bus.emit("talk_segment.generated", {
                 "segment_id": segment.id,
@@ -249,12 +271,20 @@ class TalkShowEngine:
 
         except Exception as exc:
             logger.error("Talk segment generation failed: %s", exc)
-            if job is not None:
-                try:
+            # The original exception may have poisoned the session
+            # (e.g. a failed flush) — roll back before writing failure state.
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+            try:
+                if segment is not None and segment.id is not None:
+                    segment.status = "failed"
+                if job is not None:
                     await fail_generation_job(session, job, exc)
-                    await session.commit()
-                except Exception:
-                    logger.warning("Could not update talk generation job to failed")
+                await session.commit()
+            except Exception:
+                logger.warning("Could not update talk segment/job status to failed")
             event_bus.emit("provider.error", {
                 "provider": "scriptwriter",
                 "error": str(exc),
@@ -371,7 +401,9 @@ class TalkShowEngine:
             Context dict for the scriptwriter.
         """
         # Get station config for timezone
-        result = await session.execute(select(Station).limit(1))
+        result = await session.execute(
+            select(Station).order_by(Station.id).limit(1)
+        )
         station = result.scalar_one_or_none()
 
         # Build speakers list
@@ -576,6 +608,17 @@ class TalkShowEngine:
         stitched = await concat_audio_files_variable(
             audio_files, line_gaps, output_path
         )
+
+        # Delete per-line renders after a successful stitch. Concat helpers
+        # may return an input file as a fallback, so never delete the file
+        # that was returned.
+        if stitched:
+            for line_path in audio_files:
+                if line_path != stitched:
+                    try:
+                        os.remove(line_path)
+                    except OSError:
+                        pass
 
         return stitched
 

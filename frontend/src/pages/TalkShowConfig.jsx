@@ -1,7 +1,78 @@
 import React, { useState, useEffect } from 'react'
-import { fetchTalkConfigs, createTalkConfig, updateTalkConfig, deleteTalkConfig, fetchTopics, createTopic, updateTopic, deleteTopic, fetchTalkSegments, previewTalkSegment, fetchVoices, startStreaming, fetchStreamingStatus, previewDJBreak } from '../api'
+import { fetchTalkConfigs, createTalkConfig, updateTalkConfig, deleteTalkConfig, fetchTopics, createTopic, updateTopic, deleteTopic, fetchTalkSegments, previewTalkSegment, fetchVoices, startStreaming, fetchStreamingStatus } from '../api'
+import useVoiceSample from '../hooks/useVoiceSample'
 
 const STEP_LABELS = ['Basics', 'Voices', 'Style']
+
+const VOICE_CATEGORY_ORDER = ['bright', 'warm', 'deep', 'radio', 'vintage', 'specialty', 'other']
+const VOICE_CATEGORY_LABELS = {
+  bright: 'Bright & Energetic',
+  warm: 'Warm & Smooth',
+  deep: 'Deep & Rich',
+  radio: 'Radio Host',
+  vintage: 'Vintage Radio',
+  specialty: 'Specialty',
+  other: 'Other',
+}
+
+// Module scope so typing in the parent form does not remount the select.
+function VoiceSelect({ value, onChange, label, voices, playingId, loadingSample, onPlaySample }) {
+  const groups = {}
+  for (const v of voices) {
+    const cat = v.category || 'other'
+    if (!groups[cat]) groups[cat] = []
+    groups[cat].push(v)
+  }
+  const allCats = Object.keys(groups)
+  const order = [
+    ...VOICE_CATEGORY_ORDER.filter(cat => groups[cat]),
+    ...allCats.filter(cat => !VOICE_CATEGORY_ORDER.includes(cat)),
+  ]
+
+  return (
+    <div className="form-group">
+      {label && <label>{label}</label>}
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <select
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          style={{ flex: 1 }}
+        >
+          <option value="">Select a voice...</option>
+          {order.map(cat => (
+            <optgroup key={cat} label={VOICE_CATEGORY_LABELS[cat] || cat}>
+              {groups[cat].map(v => (
+                <option key={v.voice_id} value={v.voice_id}>{v.name}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          style={{ padding: '0 16px', height: '40px', minWidth: '95px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
+          disabled={!value || loadingSample}
+          onClick={() => onPlaySample(value)}
+        >
+          {loadingSample ? (
+            <span>Loading...</span>
+          ) : playingId === value ? (
+            <>
+              <span style={{ fontSize: '10px' }}>■</span> Stop
+            </>
+          ) : (
+            <>
+              <span style={{ fontSize: '12px' }}>▶</span> Play
+            </>
+          )}
+        </button>
+      </div>
+      {voices.length === 0 && (
+        <div className="help-text">No voices loaded. Check your API key configuration.</div>
+      )}
+    </div>
+  )
+}
 
 const DEFAULT_CONFIG = {
   name: '', host_voice_id: '', host_personality_prompt: '', cohost_voices: '[]',
@@ -39,6 +110,13 @@ function TalkShowConfig() {
 
   const [topicForm, setTopicForm] = useState({
     title: '', prompt: '', topic_type: 'conversation', weight: 1, max_plays: '', notes: '',
+  })
+  const [topicError, setTopicError] = useState(null)
+
+  const { playingId, loadingSample, playSample } = useVoiceSample({
+    voices,
+    provider: 'fish_audio',
+    onError: (msg) => setError(msg),
   })
 
   // Load data
@@ -82,7 +160,7 @@ function TalkShowConfig() {
   async function handleStartBroadcast() {
     setStartingBroadcast(true)
     try {
-      await startStreaming('talk')
+      await startStreaming({ show_type: 'talk' })
       await loadStreamingStatus()
     } catch (err) { setError(err.message) }
     finally { setStartingBroadcast(false) }
@@ -96,122 +174,6 @@ function TalkShowConfig() {
     if (!voiceId) return 'None selected'
     const v = voices.find(v => v.voice_id === voiceId)
     return v ? v.name : voiceId
-  }
-
-  function VoiceSelect({ value, onChange, label }) {
-    const [playingId, setPlayingId] = useState(null)
-    const [audioElement, setAudioElement] = useState(null)
-    const [loadingSample, setLoadingSample] = useState(false)
-
-    useEffect(() => {
-      return () => {
-        if (audioElement) {
-          audioElement.pause()
-        }
-      }
-    }, [audioElement])
-
-    const playSample = async (voiceId) => {
-      if (!voiceId) return
-      if (playingId === voiceId && audioElement) {
-        audioElement.pause()
-        setPlayingId(null)
-        return
-      }
-      if (audioElement) {
-        audioElement.pause()
-      }
-      const voice = voices.find(v => v.voice_id === voiceId)
-      let url = voice?.sample_url
-
-      if (!url) {
-        setLoadingSample(true)
-        try {
-          const res = await previewDJBreak({ voice_id: voiceId, voice_provider: 'fish_audio' })
-          url = res.audio_url
-        } catch (err) {
-          alert(`Failed to generate sample: ${err.message}`)
-          setLoadingSample(false)
-          return
-        }
-        setLoadingSample(false)
-      }
-
-      if (url) {
-        const audio = new Audio(url)
-        setAudioElement(audio)
-        setPlayingId(voiceId)
-        audio.play()
-        audio.onended = () => setPlayingId(null)
-        audio.onerror = () => {
-          setPlayingId(null)
-          alert("Error playing sample audio.")
-        }
-      }
-    }
-
-    const groups = {}
-    for (const v of voices) {
-      const cat = v.category || 'other'
-      if (!groups[cat]) groups[cat] = []
-      groups[cat].push(v)
-    }
-    const preferredOrder = ['bright', 'warm', 'deep', 'radio', 'vintage', 'specialty', 'other']
-    const labels = { 
-      bright: 'Bright & Energetic', 
-      warm: 'Warm & Smooth', 
-      deep: 'Deep & Rich', 
-      radio: 'Radio Host', 
-      vintage: 'Vintage Radio', 
-      specialty: 'Specialty', 
-      other: 'Other' 
-    }
-    const allCats = Object.keys(groups)
-    const order = [...preferredOrder.filter(cat => groups[cat]), ...allCats.filter(cat => !preferredOrder.includes(cat))]
-
-    return (
-      <div className="form-group">
-        {label && <label>{label}</label>}
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <select 
-            value={value} 
-            onChange={e => onChange(e.target.value)}
-            style={{ flex: 1 }}
-          >
-            <option value="">Select a voice...</option>
-            {order.map(cat => (
-              <optgroup key={cat} label={labels[cat] || cat}>
-                {groups[cat].map(v => (
-                  <option key={v.voice_id} value={v.voice_id}>{v.name}</option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            style={{ padding: '0 16px', height: '40px', minWidth: '95px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
-            disabled={!value || loadingSample}
-            onClick={() => playSample(value)}
-          >
-            {loadingSample ? (
-              <span>Loading...</span>
-            ) : playingId === value ? (
-              <>
-                <span style={{ fontSize: '10px' }}>■</span> Stop
-              </>
-            ) : (
-              <>
-                <span style={{ fontSize: '12px' }}>▶</span> Play
-              </>
-            )}
-          </button>
-        </div>
-        {voices.length === 0 && (
-          <div className="help-text">No voices loaded. Check your API key configuration.</div>
-        )}
-      </div>
-    )
   }
 
   // Wizard open/close
@@ -342,12 +304,14 @@ function TalkShowConfig() {
   function openAddTopic() {
     setEditingTopic(null)
     setTopicForm({ title: '', prompt: '', topic_type: 'conversation', weight: 1, max_plays: '', notes: '' })
+    setTopicError(null)
     setShowTopicModal(true)
   }
 
   function openEditTopic(topic) {
     setEditingTopic(topic)
     setTopicForm({ title: topic.title, prompt: topic.prompt, topic_type: topic.topic_type, weight: topic.weight, max_plays: topic.max_plays || '', notes: topic.notes || '' })
+    setTopicError(null)
     setShowTopicModal(true)
   }
 
@@ -355,7 +319,7 @@ function TalkShowConfig() {
     e.preventDefault()
     const validationError = validateTopicForm()
     if (validationError) {
-      setError(validationError)
+      setTopicError(validationError)
       return
     }
 
@@ -365,7 +329,7 @@ function TalkShowConfig() {
       else { await createTopic(payload) }
       setShowTopicModal(false)
       loadTopics(selectedConfig.id)
-    } catch (err) { setError(err.message) }
+    } catch (err) { setTopicError(err.message) }
   }
 
   async function handleDeleteTopic(id) {
@@ -530,6 +494,10 @@ function TalkShowConfig() {
                   label="Host Voice"
                   value={configForm.host_voice_id}
                   onChange={v => updateField('host_voice_id', v)}
+                  voices={voices}
+                  playingId={playingId}
+                  loadingSample={loadingSample}
+                  onPlaySample={playSample}
                 />
                 <div className="form-group">
                   <label>Host Personality</label>
@@ -591,6 +559,10 @@ function TalkShowConfig() {
                       label="Voice"
                       value={cohost.voice_id}
                       onChange={v => updateCohost(i, 'voice_id', v)}
+                      voices={voices}
+                      playingId={playingId}
+                      loadingSample={loadingSample}
+                      onPlaySample={playSample}
                     />
                     <div className="form-group">
                       <label>Personality</label>
@@ -765,7 +737,7 @@ function TalkShowConfig() {
               <div className="card-body">
                 <p><strong>Host voice:</strong> {voiceLabel(config.host_voice_id)}</p>
                 <p><strong>Co-hosts:</strong> {cohostCount === 0 ? 'None (monologue)' : `${cohostCount} voice${cohostCount > 1 ? 's' : ''}`}</p>
-                <p><strong>Duration:</strong> {formatDuration(config.segment_min_duration)} \u2013 {formatDuration(config.segment_max_duration)}</p>
+                <p><strong>Duration:</strong> {formatDuration(config.segment_min_duration)} {'\u2013'} {formatDuration(config.segment_max_duration)}</p>
                 {config.conversation_style && <p><strong>Style:</strong> {config.conversation_style}</p>}
               </div>
               <div className="card-actions">
@@ -861,6 +833,7 @@ function TalkShowConfig() {
         <div className="modal-overlay" onClick={() => setShowTopicModal(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <h3>{editingTopic ? 'Edit Topic' : 'Add Topic'}</h3>
+            {topicError && <div className="alert alert-error">{topicError}</div>}
             <form onSubmit={handleTopicSubmit}>
               <div className="form-group">
                 <label>Title</label>

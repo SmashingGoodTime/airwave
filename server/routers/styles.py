@@ -1,17 +1,56 @@
 """Style management API endpoints."""
 
-from datetime import datetime, timezone
+import json
+import re
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
-from sqlalchemy import select
+from pydantic import BaseModel, Field, field_serializer, field_validator
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.database import get_session
+from server.models.show_style import show_styles
 from server.models.style import Style
+from server.utils.timeutils import to_utc_iso, utcnow_naive
 
 router = APIRouter(prefix="/api/styles", tags=["styles"])
+
+_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _validate_schedule(value: Optional[str]) -> Optional[str]:
+    """Validate a style schedule JSON string.
+
+    A schedule must be a JSON object of the form
+    ``{"start": "HH:MM", "end": "HH:MM"}`` (24-hour times). Empty strings
+    are normalized to None (no schedule).
+
+    Args:
+        value: The raw schedule string, or None.
+
+    Returns:
+        The validated schedule string, or None.
+
+    Raises:
+        ValueError: If the schedule is malformed.
+    """
+    if value is None or value.strip() == "":
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError("schedule must be valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError('schedule must be a JSON object like {"start": "22:00", "end": "06:00"}')
+    if set(parsed.keys()) != {"start", "end"}:
+        raise ValueError('schedule must have exactly "start" and "end" keys')
+    for key in ("start", "end"):
+        time_value = parsed[key]
+        if not isinstance(time_value, str) or not _TIME_RE.match(time_value):
+            raise ValueError(f'schedule "{key}" must be a 24-hour "HH:MM" time string')
+    return value
 
 
 class StyleCreate(BaseModel):
@@ -24,6 +63,8 @@ class StyleCreate(BaseModel):
     schedule: Optional[str] = None
     tags: Optional[str] = None
 
+    _check_schedule = field_validator("schedule")(_validate_schedule)
+
 
 class StyleUpdate(BaseModel):
     """Schema for updating an existing style."""
@@ -34,6 +75,8 @@ class StyleUpdate(BaseModel):
     weight: Optional[float] = Field(default=None, gt=0)
     schedule: Optional[str] = None
     tags: Optional[str] = None
+
+    _check_schedule = field_validator("schedule")(_validate_schedule)
 
 
 class StyleResponse(BaseModel):
@@ -50,6 +93,10 @@ class StyleResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("created_at", "updated_at")
+    def _serialize_dt(self, value: Optional[datetime]) -> Optional[str]:
+        return to_utc_iso(value)
 
 
 class ReorderItem(BaseModel):
@@ -123,7 +170,7 @@ async def update_style(
     update_data = body.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(style, key, value)
-    style.updated_at = datetime.now(timezone.utc)
+    style.updated_at = utcnow_naive()
 
     await session.commit()
     await session.refresh(style)
@@ -152,6 +199,11 @@ async def delete_style(
     if style is None:
         raise HTTPException(status_code=404, detail="Style not found")
 
+    # Explicitly clean junction rows: new DBs enforce FK cascades, but
+    # pre-existing SQLite files may lack them.
+    await session.execute(
+        delete(show_styles).where(show_styles.c.style_id == style_id)
+    )
     await session.delete(style)
     await session.commit()
     return {"success": True}
@@ -180,7 +232,7 @@ async def toggle_style(
         raise HTTPException(status_code=404, detail="Style not found")
 
     style.active = not style.active
-    style.updated_at = datetime.now(timezone.utc)
+    style.updated_at = utcnow_naive()
     await session.commit()
     await session.refresh(style)
     return style
@@ -205,7 +257,7 @@ async def reorder_styles(
         style = result.scalar_one_or_none()
         if style is not None:
             style.weight = item.weight
-            style.updated_at = datetime.now(timezone.utc)
+            style.updated_at = utcnow_naive()
 
     await session.commit()
     return {"success": True}

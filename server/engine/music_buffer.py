@@ -27,6 +27,26 @@ from server.utils.timeutils import resolve_timezone
 logger = logging.getLogger(__name__)
 
 
+def _parse_hhmm(value: str) -> int:
+    """Parse an "HH:MM" string into minutes since midnight.
+
+    Args:
+        value: Time string such as "22:30" (also accepts "24:00").
+
+    Returns:
+        Minutes since midnight.
+
+    Raises:
+        ValueError: If the string is not a valid HH:MM time.
+    """
+    hour_str, _, minute_str = value.partition(":")
+    hour = int(hour_str)
+    minute = int(minute_str) if minute_str else 0
+    if not (0 <= hour <= 24) or not (0 <= minute <= 59):
+        raise ValueError(f"Invalid HH:MM time: {value!r}")
+    return hour * 60 + minute
+
+
 class MusicBufferManager:
     """Monitors the track buffer and triggers generation when levels are low.
 
@@ -53,7 +73,9 @@ class MusicBufferManager:
             return
 
         # Get station config
-        result = await session.execute(select(Station).limit(1))
+        result = await session.execute(
+            select(Station).order_by(Station.id).limit(1)
+        )
         station = result.scalar_one_or_none()
         buffer_target = station.buffer_target if station else 3
         buffer_warning = station.buffer_warning_threshold if station else 2
@@ -168,10 +190,13 @@ class MusicBufferManager:
             # Call provider
             gen_result = await music_provider.generate(full_prompt)
 
-            # Process audio through pipeline
+            # Process audio through pipeline (the raw provider download is
+            # an intermediate file — delete it once processed)
             filepath = gen_result.get("filepath", "")
             if filepath:
-                processed = await self._pipeline.process(filepath)
+                processed = await self._pipeline.process(
+                    filepath, delete_source=True
+                )
                 track.filepath = processed["processed_path"]
                 track.duration = processed["duration"]
                 track.loudness_lufs = processed["loudness_lufs"]
@@ -207,15 +232,21 @@ class MusicBufferManager:
 
         except Exception as exc:
             logger.error("Track generation failed: %s", exc)
+            # The original exception may have poisoned the session
+            # (e.g. a failed flush) — roll back before writing failure state.
+            try:
+                await session.rollback()
+            except Exception:
+                pass
             # Mark the track as failed so it doesn't stay stuck in "generating"
-            if track is not None and track.id is not None:
-                try:
+            try:
+                if track is not None and track.id is not None:
                     track.status = "failed"
-                    if job is not None:
-                        await fail_generation_job(session, job, exc)
-                    await session.commit()
-                except Exception:
-                    logger.warning("Could not update track status to failed")
+                if job is not None:
+                    await fail_generation_job(session, job, exc)
+                await session.commit()
+            except Exception:
+                logger.warning("Could not update track status to failed")
             event_bus.emit("provider.error", {
                 "provider": "music",
                 "error": str(exc),
@@ -296,23 +327,21 @@ class MusicBufferManager:
             return None
 
         # Filter by time-of-day schedule (in the station's local timezone)
-        result = await session.execute(select(Station.timezone).limit(1))
+        result = await session.execute(
+            select(Station.timezone).order_by(Station.id).limit(1)
+        )
         station_tz_name = result.scalar_one_or_none()
         now = datetime.now(resolve_timezone(station_tz_name))
-        current_hour = now.hour
+        now_minutes = now.hour * 60 + now.minute
         eligible = []
         for style in styles:
             if style.schedule:
                 try:
                     schedule = json.loads(style.schedule)
-                    start_h = int(schedule.get("start", "00:00").split(":")[0])
-                    end_h = int(schedule.get("end", "23:59").split(":")[0])
-                    if start_h <= end_h:
-                        if start_h <= current_hour <= end_h:
-                            eligible.append(style)
-                    else:  # Wraps midnight
-                        if current_hour >= start_h or current_hour <= end_h:
-                            eligible.append(style)
+                    start_m = _parse_hhmm(schedule.get("start", "00:00"))
+                    end_m = _parse_hhmm(schedule.get("end", "24:00"))
+                    if self._in_schedule_window(now_minutes, start_m, end_m):
+                        eligible.append(style)
                 except (json.JSONDecodeError, ValueError):
                     eligible.append(style)
             else:
@@ -341,3 +370,26 @@ class MusicBufferManager:
             return random.choice(eligible)
 
         return random.choices(eligible, weights=weights, k=1)[0]
+
+    @staticmethod
+    def _in_schedule_window(now_minutes: int, start_m: int, end_m: int) -> bool:
+        """Check whether a time falls inside a style's schedule window.
+
+        Windows are end-exclusive ("22:00"–"06:00" matches 22:00 up to but
+        not including 06:00) and may cross midnight. A window whose start
+        equals its end is treated as covering the full day.
+
+        Args:
+            now_minutes: Current time as minutes since midnight.
+            start_m: Window start as minutes since midnight.
+            end_m: Window end as minutes since midnight (exclusive).
+
+        Returns:
+            True if the current time is within the window.
+        """
+        if start_m == end_m:
+            return True
+        if start_m < end_m:
+            return start_m <= now_minutes < end_m
+        # Window crosses midnight
+        return now_minutes >= start_m or now_minutes < end_m

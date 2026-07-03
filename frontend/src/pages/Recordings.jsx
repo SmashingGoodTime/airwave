@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import {
   fetchRecordingStatus,
   toggleRecording,
@@ -8,14 +8,26 @@ import {
   getRecordingDownloadUrl,
 } from '../api'
 
+const RETENTION_MIN = 1
+const RETENTION_MAX = 365
+const RETENTION_DEFAULT = 7
+
+function clampRetention(value) {
+  const parsed = parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return RETENTION_DEFAULT
+  return Math.min(RETENTION_MAX, Math.max(RETENTION_MIN, parsed))
+}
+
 function Recordings() {
   const [status, setStatus] = useState(null)
   const [recordings, setRecordings] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [toggling, setToggling] = useState(false)
-  const [retentionDays, setRetentionDays] = useState(7)
+  // Kept as a string so the input can be cleared while typing.
+  const [retentionDays, setRetentionDays] = useState(String(RETENTION_DEFAULT))
   const [savingSettings, setSavingSettings] = useState(false)
+  const refreshTimerRef = useRef(null)
 
   const loadData = useCallback(async () => {
     try {
@@ -25,7 +37,7 @@ function Recordings() {
       ])
       if (statusData.status === 'fulfilled') {
         setStatus(statusData.value)
-        setRetentionDays(statusData.value.retention_days)
+        setRetentionDays(String(statusData.value.retention_days ?? RETENTION_DEFAULT))
       }
       if (recordingList.status === 'fulfilled') setRecordings(recordingList.value)
       setError(null)
@@ -38,6 +50,9 @@ function Recordings() {
 
   useEffect(() => {
     loadData()
+    return () => {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+    }
   }, [loadData])
 
   async function handleToggle() {
@@ -46,7 +61,8 @@ function Recordings() {
       const result = await toggleRecording(!status?.enabled)
       setStatus(prev => ({ ...prev, enabled: result.enabled, active: result.active }))
       // Refresh list after a short delay to pick up new file
-      setTimeout(loadData, 2000)
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+      refreshTimerRef.current = setTimeout(loadData, 2000)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -56,8 +72,10 @@ function Recordings() {
 
   async function handleSaveSettings() {
     setSavingSettings(true)
+    const clamped = clampRetention(retentionDays)
+    setRetentionDays(String(clamped))
     try {
-      await updateRecordingSettings({ retention_days: retentionDays })
+      await updateRecordingSettings({ retention_days: clamped })
       setError(null)
     } catch (err) {
       setError(err.message)
@@ -129,10 +147,11 @@ function Recordings() {
               <input
                 id="retention"
                 type="number"
-                min="1"
-                max="365"
+                min={RETENTION_MIN}
+                max={RETENTION_MAX}
                 value={retentionDays}
-                onChange={e => setRetentionDays(parseInt(e.target.value) || 7)}
+                onChange={e => setRetentionDays(e.target.value)}
+                onBlur={() => setRetentionDays(String(clampRetention(retentionDays)))}
                 style={{ width: '60px' }}
                 className="input"
               />

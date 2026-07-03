@@ -30,7 +30,7 @@ from server.models.station import Station
 from server.models.style import Style
 from server.models.track import Track
 from server.providers.registry import ProviderRegistry
-from server.utils.timeutils import resolve_timezone
+from server.utils.timeutils import resolve_timezone, utcnow_naive
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +162,7 @@ class DJBrain:
             logger.warning("No scriptwriter provider configured, skipping show intro")
             return None
 
+        dj_break: DJBreak | None = None
         try:
             effective_show_id = show_id or (getattr(show, "id", None) if show else None)
             context = await self._build_context(session, show_id=effective_show_id)
@@ -210,7 +211,9 @@ class DJBrain:
             if voice is not None:
                 voice_config = await self._get_voice_config(session, show_id=effective_show_id)
                 audio_path = await voice.render(script_text, voice_config)
-                processed = await self._pipeline.process(audio_path, voice=True)
+                processed = await self._pipeline.process(
+                    audio_path, voice=True, delete_source=True
+                )
                 dj_break.audio_filepath = processed["processed_path"]
                 dj_break.duration = processed["duration"]
             else:
@@ -233,11 +236,22 @@ class DJBrain:
                 dj_break.id, dj_break.duration or 0,
             )
 
-            self.reset_break_counter()
             return dj_break
 
         except Exception as exc:
             logger.error("Show intro generation failed: %s", exc)
+            # The original exception may have poisoned the session
+            # (e.g. a failed flush) — roll back before writing failure state.
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+            if dj_break is not None and dj_break.id is not None:
+                try:
+                    dj_break.status = "failed"
+                    await session.commit()
+                except Exception:
+                    logger.warning("Could not mark show intro break as failed")
             event_bus.emit("provider.error", {
                 "provider": "scriptwriter",
                 "error": str(exc),
@@ -272,6 +286,7 @@ class DJBrain:
             return None
 
         job = None
+        dj_break: DJBreak | None = None
         try:
             # Assemble context, offset by queue depth so the DJ
             # references songs the listener has actually heard.
@@ -301,6 +316,10 @@ class DJBrain:
 
             if not script_text:
                 logger.warning("Scriptwriter returned empty script")
+                await fail_generation_job(
+                    session, job, "Scriptwriter returned empty script"
+                )
+                await session.commit()
                 return None
 
             # Create break record
@@ -320,7 +339,9 @@ class DJBrain:
                 audio_path = await voice.render(script_text, voice_config)
 
                 # Process audio through pipeline
-                processed = await self._pipeline.process(audio_path, voice=True)
+                processed = await self._pipeline.process(
+                    audio_path, voice=True, delete_source=True
+                )
                 dj_break.audio_filepath = processed["processed_path"]
                 dj_break.duration = processed["duration"]
             else:
@@ -353,17 +374,28 @@ class DJBrain:
                 dj_break.id, dj_break.duration or 0,
             )
 
-            self.reset_break_counter()
+            # NOTE: the break counter is NOT reset here — the scheduler
+            # resets it only after the break is successfully queued for
+            # playout, so background pre-generation cannot shorten the
+            # effective break interval.
             return dj_break
 
         except Exception as exc:
             logger.error("DJ break generation failed: %s", exc)
-            if job is not None:
-                try:
+            # The original exception may have poisoned the session
+            # (e.g. a failed flush) — roll back before writing failure state.
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+            try:
+                if dj_break is not None and dj_break.id is not None:
+                    dj_break.status = "failed"
+                if job is not None:
                     await fail_generation_job(session, job, exc)
-                    await session.commit()
-                except Exception:
-                    logger.warning("Could not update DJ break generation job to failed")
+                await session.commit()
+            except Exception:
+                logger.warning("Could not update DJ break/job status to failed")
             event_bus.emit("provider.error", {
                 "provider": "scriptwriter",
                 "error": str(exc),
@@ -394,7 +426,9 @@ class DJBrain:
         dj_config = await get_effective_dj_config(session, show_id=show_id)
 
         # Get station config for timezone
-        result = await session.execute(select(Station).limit(1))
+        result = await session.execute(
+            select(Station).order_by(Station.id).limit(1)
+        )
         station = result.scalar_one_or_none()
 
         # Get recent tracks with their style info.
@@ -434,7 +468,7 @@ class DJBrain:
 
         # Get active announcements (prioritized)
         now = datetime.now(timezone.utc)
-        now_naive = now.replace(tzinfo=None)  # SQLite stores naive UTC datetimes
+        now_naive = utcnow_naive()  # DB stores naive UTC datetimes
 
         _priority_order = case(
             (Announcement.priority == "urgent", 0),

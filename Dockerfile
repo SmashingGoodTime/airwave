@@ -1,8 +1,10 @@
 # Stage 1: Build frontend
 FROM node:20-slim AS frontend-build
 WORKDIR /app/frontend
-COPY frontend/ .
+# Copy manifests first so the npm ci layer is cached across source changes
+COPY frontend/package*.json ./
 RUN npm ci
+COPY frontend/ .
 RUN npm run build
 
 # Stage 2: Python application
@@ -26,6 +28,21 @@ COPY server/ server/
 # Copy frontend build from stage 1
 COPY --from=frontend-build /app/frontend/dist frontend/dist
 
+# Run as non-root. UID 1000 matches the default first user on most Linux
+# hosts so the bind-mounted ./audio and ./data directories stay writable.
+# /data holds the SQLite database (see docker-compose.yml); /app/audio is
+# the generated-audio volume; /app itself must be writable for the
+# wizard-managed .env file.
+RUN useradd --uid 1000 --user-group --no-create-home radio && \
+    mkdir -p /data /app/audio && \
+    chown -R radio:radio /data /app
+
+USER radio
+
 EXPOSE 8000
+
+# curl is not installed in python:slim, so probe with the stdlib instead.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/setup/status', timeout=4)"]
 
 CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "8000"]

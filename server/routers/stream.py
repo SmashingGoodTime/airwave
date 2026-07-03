@@ -23,7 +23,9 @@ async def get_stream_url(
     Returns:
         A dict with the stream URL.
     """
-    result = await session.execute(select(Station).limit(1))
+    result = await session.execute(
+        select(Station).order_by(Station.id).limit(1)
+    )
     station = result.scalar_one_or_none()
     url = station.stream_url if station and station.stream_url else settings.ICECAST_URL
     return {"url": url}

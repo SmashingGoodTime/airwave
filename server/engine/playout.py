@@ -1,26 +1,49 @@
 """Playout interface managing communication with Liquidsoap.
 
 Communicates with Liquidsoap via its telnet interface to queue tracks,
-get playback status, skip items, and update stream metadata.
+get playback status, skip items, and toggle the live caller/recorder.
+
+Command inventory (verified against the Liquidsoap 2.2.5 reference):
+- ``request.queue(id="queue")`` registers: ``queue.push``, ``queue.queue``,
+  ``queue.skip``, ``queue.flush_and_skip``.
+- Outputs created with ``register_telnet=true`` (the default) register
+  output-level commands under their id: ``<id>.skip``, ``<id>.metadata``,
+  ``<id>.remaining``, ``<id>.start``, ``<id>.stop``, ``<id>.status``.
+  station.liq gives the Icecast output ``id="radio_out"`` and the file
+  recorder ``id="recorder"``.
+- ``caller.set`` / ``caller.status`` are custom commands registered in
+  station.liq via ``server.register`` to gate the live harbor input.
+
+Now-playing metadata is passed at queue time via ``annotate:`` URIs and
+flows to Icecast through the normal ICY metadata path.
 """
 
 import asyncio
 import logging
+import re
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Matches the "--- 3 ---" separators in output-level metadata replies.
+_METADATA_BLOCK_SEPARATOR = re.compile(r"^--- \d+ ---$")
 
 
 class PlayoutInterface:
     """Manages the playout queue and communicates with Liquidsoap via telnet.
 
     Uses Liquidsoap v2.2.x telnet protocol. The request.queue source is
-    named "queue" in station.liq, so commands target "queue.*".
+    named "queue" in station.liq, so queue commands target "queue.*";
+    output-level commands target "radio_out.*" (the Icecast output id).
 
     Args:
         host: Liquidsoap telnet host.
         port: Liquidsoap telnet port.
     """
+
+    #: Module-wide flag so the deprecated update_metadata() warns only once.
+    _update_metadata_warned: bool = False
 
     def __init__(self, host: str = "liquidsoap", port: int = 1234) -> None:
         self._host = host
@@ -40,14 +63,12 @@ class PlayoutInterface:
         Returns:
             True if Liquidsoap is ready, False if timeout was reached.
         """
-        import time
-
         deadline = time.monotonic() + timeout
         attempt = 0
         while time.monotonic() < deadline:
             attempt += 1
             response = await self._send_command("version")
-            if response:
+            if response and not self._is_error_reply(response):
                 logger.info(
                     "Liquidsoap ready (attempt %d): %s",
                     attempt,
@@ -87,112 +108,189 @@ class PlayoutInterface:
         logger.warning("Path does not contain /audio/ segment: %s", filepath)
         return normalized
 
-    async def _send_command(self, command: str) -> str:
+    @staticmethod
+    def _escape_annotation(value: str) -> str:
+        """Escape a metadata value for use inside an annotate: URI.
+
+        Values are always emitted inside double quotes, where commas and
+        colons are literal; only backslashes and double quotes need escaping.
+
+        Args:
+            value: Raw metadata value.
+
+        Returns:
+            The escaped value, safe to embed between double quotes.
+        """
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    @staticmethod
+    def _is_error_reply(response: str | None) -> bool:
+        """Check whether a Liquidsoap telnet reply signals failure.
+
+        Liquidsoap replies to unknown or failing commands with a line
+        starting with "ERROR" (e.g. 'ERROR: unknown command, type "help"
+        to get a list of commands.') before the END terminator.
+
+        Args:
+            response: The reply from _send_command, or None on
+                connection failure.
+
+        Returns:
+            True if the reply is missing or contains an error line.
+        """
+        if response is None:
+            return True
+        return any(
+            line.strip().startswith("ERROR") for line in response.splitlines()
+        )
+
+    async def _send_command(self, command: str) -> str | None:
         """Send a command to Liquidsoap via telnet and return the response.
 
         Opens a new connection per command (Liquidsoap telnet is stateless).
         Reads until the END marker that Liquidsoap sends after each response.
+        Every network operation is bounded by a timeout so a hung Liquidsoap
+        cannot stall the scheduler, and the socket is always closed.
 
         Args:
             command: The Liquidsoap telnet command to send.
 
         Returns:
-            The response string from Liquidsoap, or empty string on failure.
+            The response string from Liquidsoap (may be empty), or None
+            if the connection failed or no reply arrived at all.
         """
+        writer: asyncio.StreamWriter | None = None
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(self._host, self._port),
                 timeout=5.0,
             )
             writer.write(f"{command}\r\n".encode())
-            await writer.drain()
+            await asyncio.wait_for(writer.drain(), timeout=5.0)
 
             # Read response until END marker or timeout
-            response_lines = []
+            response_lines: list[str] = []
+            got_any = False
             try:
                 while True:
                     line = await asyncio.wait_for(reader.readline(), timeout=3.0)
                     if not line:
                         break
+                    got_any = True
                     decoded = line.decode().strip()
                     if decoded == "END":
                         break
                     response_lines.append(decoded)
             except asyncio.TimeoutError:
-                pass
-
-            writer.write(b"quit\r\n")
-            await writer.drain()
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except Exception:
-                pass
+                # Keep any partial reply; a totally silent server is a failure.
+                if not got_any:
+                    raise
 
             self._connected = True
             return "\n".join(response_lines)
 
         except (ConnectionRefusedError, OSError, asyncio.TimeoutError) as exc:
             self._connected = False
-            logger.debug("Liquidsoap connection failed (%s:%d): %s", self._host, self._port, exc)
-            return ""
+            logger.debug(
+                "Liquidsoap connection failed (%s:%d): %s", self._host, self._port, exc
+            )
+            return None
+        finally:
+            if writer is not None:
+                try:
+                    writer.write(b"quit\r\n")
+                except Exception:
+                    pass
+                writer.close()
+                try:
+                    await asyncio.wait_for(writer.wait_closed(), timeout=2.0)
+                except Exception:
+                    pass
 
-    async def queue_track(self, filepath: str) -> bool:
+    async def queue_track(
+        self, filepath: str, *, title: str | None = None, artist: str | None = None
+    ) -> bool:
         """Add a track to the Liquidsoap request queue.
 
-        Uses the "queue.push" command which accepts a URI (file path).
-        Converts local paths to container paths since Liquidsoap runs
-        in Docker with audio mounted at /audio/.
+        Uses the "queue.push" command which accepts a URI. When title or
+        artist are given they are attached via the annotate: protocol so
+        the metadata reaches Icecast through the normal ICY path.
 
         Args:
             filepath: Path to the audio file to queue.
+            title: Optional track title for stream metadata.
+            artist: Optional artist name for stream metadata.
 
         Returns:
             True if the track was successfully queued.
         """
-        abs_path = self._to_container_path(filepath)
-        response = await self._send_command(f"queue.push {abs_path}")
+        uri = self._to_container_path(filepath)
+        annotations: list[str] = []
+        if title is not None:
+            annotations.append(f'title="{self._escape_annotation(title)}"')
+        if artist is not None:
+            annotations.append(f'artist="{self._escape_annotation(artist)}"')
+        if annotations:
+            uri = f"annotate:{','.join(annotations)}:{uri}"
 
-        if response:
-            logger.info("Queued track: %s (rid: %s)", filepath, response.strip()[:20])
-            return True
-        else:
-            logger.warning("Failed to queue track: %s", filepath)
+        response = await self._send_command(f"queue.push {uri}")
+        if self._is_error_reply(response):
+            logger.warning("Failed to queue track: %s (%s)", filepath, response)
             return False
+        logger.info("Queued track: %s (rid: %s)", filepath, response.strip()[:20])
+        return True
 
-    async def queue_break(self, filepath: str) -> bool:
+    async def queue_break(self, filepath: str, *, title: str | None = None) -> bool:
         """Add a DJ break audio file to the playout queue.
 
         Tags the request with liq_cross_duration=0 so Liquidsoap skips
         crossfade for this item, preventing the DJ speech from being
-        cut short by an early fade-out into the next track.
+        cut short by an early fade-out into the next track. An optional
+        title is attached for stream metadata.
 
         Args:
             filepath: Path to the DJ break audio file.
+            title: Optional break title for stream metadata.
 
         Returns:
             True if the break was successfully queued.
         """
-        abs_path = self._to_container_path(filepath)
-        annotated = f"annotate:liq_cross_duration=\"0\",type=\"dj_break\":{abs_path}"
-        response = await self._send_command(f"queue.push {annotated}")
+        uri = self._to_container_path(filepath)
+        annotations = ['liq_cross_duration="0"', 'type="dj_break"']
+        if title is not None:
+            annotations.append(f'title="{self._escape_annotation(title)}"')
+        annotated = f"annotate:{','.join(annotations)}:{uri}"
 
-        if response:
-            logger.info("Queued DJ break: %s (rid: %s)", filepath, response.strip()[:20])
-            return True
-        else:
-            logger.warning("Failed to queue DJ break: %s", filepath)
+        response = await self._send_command(f"queue.push {annotated}")
+        if self._is_error_reply(response):
+            logger.warning("Failed to queue DJ break: %s (%s)", filepath, response)
             return False
+        logger.info("Queued DJ break: %s (rid: %s)", filepath, response.strip()[:20])
+        return True
 
     async def skip(self) -> bool:
         """Skip the currently playing item.
 
+        Prefers the output-level "radio_out.skip" (skips whatever is on
+        air, including fallback audio); falls back to "queue.skip" if the
+        output command is unavailable.
+
         Returns:
-            True if the skip command was acknowledged.
+            True if a skip command was acknowledged without error.
         """
-        response = await self._send_command("radio.skip")
-        logger.info("Skip requested (response: %s)", response[:50] if response else "none")
-        return bool(response) or self._connected
+        response = await self._send_command("radio_out.skip")
+        if not self._is_error_reply(response):
+            logger.info("Skip requested via radio_out.skip (response: %s)", response[:50])
+            return True
+
+        logger.debug("radio_out.skip failed (%s); trying queue.skip", response)
+        response = await self._send_command("queue.skip")
+        if not self._is_error_reply(response):
+            logger.info("Skip requested via queue.skip (response: %s)", response[:50])
+            return True
+
+        logger.warning("Skip failed (response: %s)", response)
+        return False
 
     async def get_status(self) -> dict:
         """Get the current playout status from Liquidsoap.
@@ -203,11 +301,12 @@ class PlayoutInterface:
         if not self._connected:
             await self._send_command("version")
 
-        # Get remaining time on current track
-        remaining_raw = await self._send_command("radio.remaining")
-        remaining = None
-        if remaining_raw:
+        # Remaining time on the item currently on air (output-level command).
+        remaining_raw = await self._send_command("radio_out.remaining")
+        remaining: float | None = None
+        if remaining_raw and not self._is_error_reply(remaining_raw):
             try:
+                # Reply is a float in seconds, or "(undef)" when unknown.
                 remaining = float(remaining_raw.strip())
             except ValueError:
                 remaining = None
@@ -226,41 +325,56 @@ class PlayoutInterface:
     async def _get_current_metadata(self) -> dict:
         """Fetch current track metadata from Liquidsoap.
 
+        Uses the output-level "radio_out.metadata" command, which returns
+        the recent metadata history as blocks separated by "--- N ---"
+        lines (most recent block last). Only the latest block is returned.
+
         Returns:
-            A dict of metadata key-value pairs.
+            A dict of metadata key-value pairs (empty on failure).
         """
-        response = await self._send_command("queue.metadata")
-        metadata = {}
-        if response:
-            for line in response.split("\n"):
-                if "=" in line:
-                    key, _, value = line.partition("=")
-                    metadata[key.strip()] = value.strip().strip('"')
-        return metadata
+        response = await self._send_command("radio_out.metadata")
+        if not response or self._is_error_reply(response):
+            return {}
+
+        blocks: list[dict] = [{}]
+        for line in response.split("\n"):
+            stripped = line.strip()
+            if _METADATA_BLOCK_SEPARATOR.match(stripped):
+                blocks.append({})
+                continue
+            if "=" in stripped:
+                key, _, value = stripped.partition("=")
+                blocks[-1][key.strip()] = value.strip().strip('"')
+
+        for block in reversed(blocks):
+            if block:
+                return block
+        return {}
 
     async def update_metadata(self, title: str, artist: str = "AI Radio") -> bool:
-        """Update the stream metadata shown to listeners.
+        """Deprecated: does nothing and always returns False.
 
-        Liquidsoap v2.2 uses the "metadata.update" command on the output.
+        Stream metadata must be provided at queue time via the title/artist
+        keyword arguments of queue_track() / queue_break(); it then reaches
+        Icecast through the normal ICY metadata path. There is no reliable
+        way to retro-actively change metadata of an already-queued request
+        over telnet in Liquidsoap 2.2.
 
         Args:
-            title: The track or break title.
-            artist: The artist name (defaults to station name).
+            title: Ignored.
+            artist: Ignored.
 
         Returns:
-            True if metadata was updated successfully.
+            Always False.
         """
-        # Escape quotes in metadata values
-        safe_title = title.replace('"', '\\"')
-        safe_artist = artist.replace('"', '\\"')
-
-        # Insert metadata into the queue source
-        response = await self._send_command(
-            f'queue.insert 0 annotate:title="{safe_title}",artist="{safe_artist}":empty'
-        )
-        # The metadata update via annotate may not return a useful response,
-        # but the on_metadata handler in station.liq will pick it up
-        return self._connected
+        if not PlayoutInterface._update_metadata_warned:
+            PlayoutInterface._update_metadata_warned = True
+            logger.warning(
+                "PlayoutInterface.update_metadata() is deprecated and does "
+                "nothing; pass title/artist to queue_track()/queue_break() "
+                "instead."
+            )
+        return False
 
     async def is_alive(self) -> bool:
         """Check if Liquidsoap is responding to telnet commands.
@@ -269,7 +383,7 @@ class PlayoutInterface:
             True if Liquidsoap responds to the version command.
         """
         response = await self._send_command("version")
-        alive = bool(response)
+        alive = bool(response) and not self._is_error_reply(response)
         self._connected = alive
         return alive
 
@@ -280,7 +394,7 @@ class PlayoutInterface:
             Number of queued request IDs, or 0 if unable to determine.
         """
         response = await self._send_command("queue.queue")
-        if not response or response.strip() == "":
+        if not response or self._is_error_reply(response):
             return 0
         # Response is space-separated request IDs
         items = response.strip().split()
@@ -289,63 +403,79 @@ class PlayoutInterface:
     async def start_live_input(self) -> bool:
         """Enable the harbor input for live caller audio.
 
-        Activates the caller input source in Liquidsoap so that
-        audio streamed to the harbor port takes priority.
+        Sends the custom "caller.set true" command registered in
+        station.liq, which flips the caller_enabled flag gating the
+        harbor input via source.available.
 
         Returns:
-            True if the command was acknowledged.
+            True if Liquidsoap confirmed the flag was set.
         """
-        response = await self._send_command("caller.start")
-        logger.info("Live input started (response: %s)", response[:50] if response else "none")
-        return self._connected
+        response = await self._send_command("caller.set true")
+        ok = (
+            not self._is_error_reply(response)
+            and response is not None
+            and response.strip().startswith("OK")
+        )
+        if ok:
+            logger.info("Live input enabled (response: %s)", response.strip()[:50])
+        else:
+            logger.warning("Failed to enable live input (response: %s)", response)
+        return ok
 
     async def stop_live_input(self) -> bool:
         """Disable the harbor input, reverting to normal queue playout.
 
         Returns:
-            True if the command was acknowledged.
+            True if Liquidsoap confirmed the flag was cleared.
         """
-        response = await self._send_command("caller.stop")
-        logger.info("Live input stopped (response: %s)", response[:50] if response else "none")
-        return self._connected
+        response = await self._send_command("caller.set false")
+        ok = (
+            not self._is_error_reply(response)
+            and response is not None
+            and response.strip().startswith("OK")
+        )
+        if ok:
+            logger.info("Live input disabled (response: %s)", response.strip()[:50])
+        else:
+            logger.warning("Failed to disable live input (response: %s)", response)
+        return ok
 
     async def start_recording(self) -> bool:
         """Start the local stream recording output in Liquidsoap.
 
+        The recorder output is created with start=false in station.liq,
+        so nothing is recorded until this command is sent.
+
         Returns:
-            True if the command was acknowledged.
+            True if the command was acknowledged without error.
         """
         response = await self._send_command("recorder.start")
-        logger.info("Recording started (response: %s)", response[:50] if response else "none")
-        return self._connected
+        if self._is_error_reply(response):
+            logger.warning("Failed to start recording (response: %s)", response)
+            return False
+        logger.info("Recording started (response: %s)", response.strip()[:50])
+        return True
 
     async def stop_recording(self) -> bool:
         """Stop the local stream recording output in Liquidsoap.
 
         Returns:
-            True if the command was acknowledged.
+            True if the command was acknowledged without error.
         """
         response = await self._send_command("recorder.stop")
-        logger.info("Recording stopped (response: %s)", response[:50] if response else "none")
-        return self._connected
+        if self._is_error_reply(response):
+            logger.warning("Failed to stop recording (response: %s)", response)
+            return False
+        logger.info("Recording stopped (response: %s)", response.strip()[:50])
+        return True
 
     async def is_recording(self) -> bool:
         """Check if the recorder output is currently active.
 
         Returns:
-            True if the recorder is running.
+            True if the recorder is running ("recorder.status" replies "on").
         """
         response = await self._send_command("recorder.status")
-        return "on" in response.lower() if response else False
-
-    async def get_secondary_queue_length(self) -> int:
-        """Get the number of items in the secondary queue (pending requests).
-
-        Returns:
-            Number of secondary queue items.
-        """
-        response = await self._send_command("queue.secondary_queue")
-        if not response or response.strip() == "":
-            return 0
-        items = response.strip().split()
-        return len([item for item in items if item.strip()])
+        if not response or self._is_error_reply(response):
+            return False
+        return response.strip().lower().startswith("on")

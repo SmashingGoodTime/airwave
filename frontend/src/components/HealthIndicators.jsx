@@ -2,11 +2,11 @@ import React from 'react'
 
 const FRIENDLY_NAMES = {
   music: 'Music Generation (Suno)',
-  scriptwriter: 'DJ Script Writer (Claude)',
-  voice: 'DJ Voice (ElevenLabs)',
-  script_writer: 'DJ Script Writer (Claude)',
+  scriptwriter: 'DJ Script Writer (Google Gemini)',
+  voice: 'DJ Voice (Fish Audio)',
+  script_writer: 'DJ Script Writer (Google Gemini)',
   music_provider: 'Music Generation (Suno)',
-  voice_provider: 'DJ Voice (ElevenLabs)',
+  voice_provider: 'DJ Voice (Fish Audio)',
 }
 
 function friendlyName(name) {

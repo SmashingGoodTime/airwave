@@ -8,6 +8,16 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+class AudioProcessingError(RuntimeError):
+    """Raised when an FFmpeg processing step fails.
+
+    Callers (the audio pipeline and, transitively, the generation
+    engines) must treat this as a hard failure and mark the item
+    failed — returning unprocessed audio would put unnormalized
+    files on the air.
+    """
+
+
 async def _run_ffmpeg(*args: str) -> tuple[int, str, str]:
     """Run an FFmpeg command asynchronously.
 
@@ -25,7 +35,14 @@ async def _run_ffmpeg(*args: str) -> tuple[int, str, str]:
         stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await proc.communicate()
-    return proc.returncode, stdout.decode(), stderr.decode()
+    # errors="replace": ffmpeg output can contain non-UTF-8 bytes on
+    # Windows (cp1252 filenames); a decode error here would escape all
+    # downstream error handling.
+    return (
+        proc.returncode,
+        stdout.decode(errors="replace"),
+        stderr.decode(errors="replace"),
+    )
 
 
 async def _run_ffprobe(*args: str) -> tuple[int, str, str]:
@@ -44,7 +61,11 @@ async def _run_ffprobe(*args: str) -> tuple[int, str, str]:
         stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await proc.communicate()
-    return proc.returncode, stdout.decode(), stderr.decode()
+    return (
+        proc.returncode,
+        stdout.decode(errors="replace"),
+        stderr.decode(errors="replace"),
+    )
 
 
 async def get_duration(filepath: str) -> float:
@@ -121,6 +142,36 @@ async def normalize_loudness(
 
     Returns:
         Path to the normalized audio file.
+
+    Raises:
+        AudioProcessingError: If FFmpeg fails to normalize the file.
+    """
+    normalized_path, _ = await normalize_loudness_measured(
+        filepath, target_lufs=target_lufs, output_path=output_path
+    )
+    return normalized_path
+
+
+async def normalize_loudness_measured(
+    filepath: str, target_lufs: float = -14.0, output_path: str | None = None
+) -> tuple[str, float | None]:
+    """Normalize loudness and return the measured output loudness.
+
+    Same as :func:`normalize_loudness`, but also returns the integrated
+    output loudness reported by loudnorm's pass-2 summary, letting
+    callers skip a separate full-decode ebur128 measurement.
+
+    Args:
+        filepath: Path to the input audio file.
+        target_lufs: Target integrated loudness in LUFS.
+        output_path: Optional output path. If None, replaces the input file.
+
+    Returns:
+        A tuple of (normalized_path, output_lufs). ``output_lufs`` is None
+        if the summary could not be parsed.
+
+    Raises:
+        AudioProcessingError: If FFmpeg fails to normalize the file.
     """
     if output_path is None:
         p = Path(filepath)
@@ -134,7 +185,9 @@ async def normalize_loudness(
     )
     if rc != 0:
         logger.error("Loudnorm pass 1 failed for %s: %s", filepath, stderr[:200])
-        return filepath
+        raise AudioProcessingError(
+            f"Loudnorm pass 1 failed for {filepath}: {stderr[:200]}"
+        )
 
     # Parse measured values from JSON in stderr
     measured = _parse_loudnorm_stats(stderr)
@@ -143,13 +196,18 @@ async def normalize_loudness(
         # Fallback to single-pass
         rc, _, stderr2 = await _run_ffmpeg(
             "-i", filepath,
-            "-af", f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11",
+            "-af", f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11:print_format=summary",
             "-ar", "48000", "-ac", "2",
             output_path,
         )
-        if rc == 0:
-            return output_path
-        return filepath
+        if rc != 0:
+            logger.error(
+                "Single-pass loudnorm failed for %s: %s", filepath, stderr2[:200]
+            )
+            raise AudioProcessingError(
+                f"Single-pass loudnorm failed for {filepath}: {stderr2[:200]}"
+            )
+        return output_path, _parse_loudnorm_output_i(stderr2)
 
     # Pass 2: Apply with measured values
     loudnorm_filter = (
@@ -170,10 +228,32 @@ async def normalize_loudness(
     )
     if rc != 0:
         logger.error("Loudnorm pass 2 failed for %s: %s", filepath, stderr2[:200])
-        return filepath
+        raise AudioProcessingError(
+            f"Loudnorm pass 2 failed for {filepath}: {stderr2[:200]}"
+        )
 
     logger.info("Normalized %s -> %s (target: %s LUFS)", filepath, output_path, target_lufs)
-    return output_path
+    return output_path, _parse_loudnorm_output_i(stderr2)
+
+
+def _parse_loudnorm_output_i(stderr: str) -> float | None:
+    """Extract the output integrated loudness from a loudnorm summary.
+
+    Args:
+        stderr: FFmpeg stderr containing ``print_format=summary`` output.
+
+    Returns:
+        The ``Output Integrated`` value in LUFS, or None if not found.
+    """
+    for line in stderr.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Output Integrated:"):
+            parts = stripped.split()
+            try:
+                return float(parts[2])
+            except (IndexError, ValueError):
+                return None
+    return None
 
 
 def _parse_loudnorm_stats(stderr: str) -> dict | None:
@@ -209,6 +289,9 @@ async def convert_to_wav(filepath: str, output_path: str | None = None) -> str:
 
     Returns:
         Path to the WAV file.
+
+    Raises:
+        AudioProcessingError: If FFmpeg fails to convert the file.
     """
     if output_path is None:
         p = Path(filepath)
@@ -225,7 +308,9 @@ async def convert_to_wav(filepath: str, output_path: str | None = None) -> str:
             Path(tmp).replace(Path(output_path))
             return output_path
         logger.error("WAV conversion failed for %s: %s", filepath, stderr[:200])
-        return filepath
+        raise AudioProcessingError(
+            f"WAV conversion failed for {filepath}: {stderr[:200]}"
+        )
 
     rc, _, stderr = await _run_ffmpeg(
         "-i", filepath,
@@ -234,7 +319,9 @@ async def convert_to_wav(filepath: str, output_path: str | None = None) -> str:
     )
     if rc != 0:
         logger.error("WAV conversion failed for %s: %s", filepath, stderr[:200])
-        return filepath
+        raise AudioProcessingError(
+            f"WAV conversion failed for {filepath}: {stderr[:200]}"
+        )
 
     return output_path
 
@@ -485,6 +572,9 @@ async def trim_silence(
 
     Returns:
         Path to the trimmed output file.
+
+    Raises:
+        AudioProcessingError: If FFmpeg fails to trim the file.
     """
     if voice:
         # Speech trails off gradually — use a higher threshold so only
@@ -511,7 +601,9 @@ async def trim_silence(
         output_path,
     )
     if rc != 0:
-        logger.warning("Silence trimming failed for %s: %s", filepath, stderr[:200])
-        return filepath
+        logger.error("Silence trimming failed for %s: %s", filepath, stderr[:200])
+        raise AudioProcessingError(
+            f"Silence trimming failed for {filepath}: {stderr[:200]}"
+        )
 
     return output_path
