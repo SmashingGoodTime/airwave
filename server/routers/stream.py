@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.config import settings
 from server.database import get_session
-from server.models.station import Station
+from server.models.station import Station, get_station
 
 router = APIRouter(prefix="/api/stream", tags=["stream"])
 
@@ -23,9 +23,6 @@ async def get_stream_url(
     Returns:
         A dict with the stream URL.
     """
-    result = await session.execute(
-        select(Station).order_by(Station.id).limit(1)
-    )
-    station = result.scalar_one_or_none()
+    station = await get_station(session)
     url = station.stream_url if station and station.stream_url else settings.ICECAST_URL
     return {"url": url}

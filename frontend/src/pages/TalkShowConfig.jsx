@@ -1,78 +1,10 @@
 import React, { useState, useEffect } from 'react'
 import { fetchTalkConfigs, createTalkConfig, updateTalkConfig, deleteTalkConfig, fetchTopics, createTopic, updateTopic, deleteTopic, fetchTalkSegments, previewTalkSegment, fetchVoices, startStreaming, fetchStreamingStatus } from '../api'
 import useVoiceSample from '../hooks/useVoiceSample'
+import { formatDuration } from '../utils/format'
+import VoiceSelect from '../components/VoiceSelect'
 
 const STEP_LABELS = ['Basics', 'Voices', 'Style']
-
-const VOICE_CATEGORY_ORDER = ['bright', 'warm', 'deep', 'radio', 'vintage', 'specialty', 'other']
-const VOICE_CATEGORY_LABELS = {
-  bright: 'Bright & Energetic',
-  warm: 'Warm & Smooth',
-  deep: 'Deep & Rich',
-  radio: 'Radio Host',
-  vintage: 'Vintage Radio',
-  specialty: 'Specialty',
-  other: 'Other',
-}
-
-// Module scope so typing in the parent form does not remount the select.
-function VoiceSelect({ value, onChange, label, voices, playingId, loadingSample, onPlaySample }) {
-  const groups = {}
-  for (const v of voices) {
-    const cat = v.category || 'other'
-    if (!groups[cat]) groups[cat] = []
-    groups[cat].push(v)
-  }
-  const allCats = Object.keys(groups)
-  const order = [
-    ...VOICE_CATEGORY_ORDER.filter(cat => groups[cat]),
-    ...allCats.filter(cat => !VOICE_CATEGORY_ORDER.includes(cat)),
-  ]
-
-  return (
-    <div className="form-group">
-      {label && <label>{label}</label>}
-      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-        <select
-          value={value}
-          onChange={e => onChange(e.target.value)}
-          style={{ flex: 1 }}
-        >
-          <option value="">Select a voice...</option>
-          {order.map(cat => (
-            <optgroup key={cat} label={VOICE_CATEGORY_LABELS[cat] || cat}>
-              {groups[cat].map(v => (
-                <option key={v.voice_id} value={v.voice_id}>{v.name}</option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          style={{ padding: '0 16px', height: '40px', minWidth: '95px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
-          disabled={!value || loadingSample}
-          onClick={() => onPlaySample(value)}
-        >
-          {loadingSample ? (
-            <span>Loading...</span>
-          ) : playingId === value ? (
-            <>
-              <span style={{ fontSize: '10px' }}>■</span> Stop
-            </>
-          ) : (
-            <>
-              <span style={{ fontSize: '12px' }}>▶</span> Play
-            </>
-          )}
-        </button>
-      </div>
-      {voices.length === 0 && (
-        <div className="help-text">No voices loaded. Check your API key configuration.</div>
-      )}
-    </div>
-  )
-}
 
 const DEFAULT_CONFIG = {
   name: '', host_voice_id: '', host_personality_prompt: '', cohost_voices: '[]',
@@ -358,13 +290,6 @@ function TalkShowConfig() {
         return `${l.speaker}${pace}: ${l.text}`
       }).join('\n\n')
     } catch { return scriptText }
-  }
-
-  function formatDuration(seconds) {
-    if (!seconds) return '--'
-    const m = Math.floor(seconds / 60)
-    const s = Math.round(seconds % 60)
-    return `${m}:${s.toString().padStart(2, '0')}`
   }
 
   const typeBadge = (type) => {

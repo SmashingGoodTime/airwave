@@ -369,6 +369,11 @@ async def concat_audio_files(
 
     Returns:
         Path to the concatenated output file.
+
+    Raises:
+        AudioProcessingError: If FFmpeg fails to concatenate. Callers must
+            treat this as a hard failure — silently airing a fragment of
+            the intended audio is worse than failing the item.
     """
     if not files:
         raise ValueError("No audio files to concatenate")
@@ -420,8 +425,9 @@ async def concat_audio_files(
 
     if rc != 0:
         logger.error("Audio concatenation failed: %s", stderr[:300])
-        # Fallback: return first file
-        return files[0]
+        raise AudioProcessingError(
+            f"Concatenation of {len(files)} files failed: {stderr[:200]}"
+        )
 
     logger.info(
         "Concatenated %d audio files (gap=%.1fs) -> %s",
@@ -446,6 +452,10 @@ async def concat_audio_files_variable(
 
     Returns:
         Path to the concatenated output file.
+
+    Raises:
+        AudioProcessingError: If both the variable-gap graph and the
+            uniform-gap fallback fail.
     """
     if not files:
         raise ValueError("No audio files to concatenate")

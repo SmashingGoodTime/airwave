@@ -11,8 +11,6 @@ Command inventory (verified against the Liquidsoap 2.2.5 reference):
   ``<id>.remaining``, ``<id>.start``, ``<id>.stop``, ``<id>.status``.
   station.liq gives the Icecast output ``id="radio_out"`` and the file
   recorder ``id="recorder"``.
-- ``caller.set`` / ``caller.status`` are custom commands registered in
-  station.liq via ``server.register`` to gate the live harbor input.
 
 Now-playing metadata is passed at queue time via ``annotate:`` URIs and
 flows to Icecast through the normal ICY metadata path.
@@ -41,9 +39,6 @@ class PlayoutInterface:
         host: Liquidsoap telnet host.
         port: Liquidsoap telnet port.
     """
-
-    #: Module-wide flag so the deprecated update_metadata() warns only once.
-    _update_metadata_warned: bool = False
 
     def __init__(self, host: str = "liquidsoap", port: int = 1234) -> None:
         self._host = host
@@ -371,31 +366,6 @@ class PlayoutInterface:
             return None
         return path
 
-    async def update_metadata(self, title: str, artist: str = "AI Radio") -> bool:
-        """Deprecated: does nothing and always returns False.
-
-        Stream metadata must be provided at queue time via the title/artist
-        keyword arguments of queue_track() / queue_break(); it then reaches
-        Icecast through the normal ICY metadata path. There is no reliable
-        way to retro-actively change metadata of an already-queued request
-        over telnet in Liquidsoap 2.2.
-
-        Args:
-            title: Ignored.
-            artist: Ignored.
-
-        Returns:
-            Always False.
-        """
-        if not PlayoutInterface._update_metadata_warned:
-            PlayoutInterface._update_metadata_warned = True
-            logger.warning(
-                "PlayoutInterface.update_metadata() is deprecated and does "
-                "nothing; pass title/artist to queue_track()/queue_break() "
-                "instead."
-            )
-        return False
-
     async def is_alive(self) -> bool:
         """Check if Liquidsoap is responding to telnet commands.
 
@@ -419,46 +389,6 @@ class PlayoutInterface:
         # Response is space-separated request IDs
         items = response.strip().split()
         return len([item for item in items if item.strip()])
-
-    async def start_live_input(self) -> bool:
-        """Enable the harbor input for live caller audio.
-
-        Sends the custom "caller.set true" command registered in
-        station.liq, which flips the caller_enabled flag gating the
-        harbor input via source.available.
-
-        Returns:
-            True if Liquidsoap confirmed the flag was set.
-        """
-        response = await self._send_command("caller.set true")
-        ok = (
-            not self._is_error_reply(response)
-            and response is not None
-            and response.strip().startswith("OK")
-        )
-        if ok:
-            logger.info("Live input enabled (response: %s)", response.strip()[:50])
-        else:
-            logger.warning("Failed to enable live input (response: %s)", response)
-        return ok
-
-    async def stop_live_input(self) -> bool:
-        """Disable the harbor input, reverting to normal queue playout.
-
-        Returns:
-            True if Liquidsoap confirmed the flag was cleared.
-        """
-        response = await self._send_command("caller.set false")
-        ok = (
-            not self._is_error_reply(response)
-            and response is not None
-            and response.strip().startswith("OK")
-        )
-        if ok:
-            logger.info("Live input disabled (response: %s)", response.strip()[:50])
-        else:
-            logger.warning("Failed to disable live input (response: %s)", response)
-        return ok
 
     async def start_recording(self) -> bool:
         """Start the local stream recording output in Liquidsoap.

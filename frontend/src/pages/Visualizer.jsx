@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { fetchStreamUrl, fetchDJConfig, fetchDashboardStatus, fetchTrackLyrics, fetchBreakScript } from '../api'
+import { formatClock } from '../utils/format'
 
 const VIZ_MODES = ['bars', 'circular', 'waveform']
 const MODE_CYCLE_MS = 30000
@@ -318,13 +319,6 @@ function drawWaveform(ctx, w, h, freqData, timeDomainData, time) {
   ctx.stroke()
 }
 
-function formatTime(seconds) {
-  if (!seconds || seconds < 0) return '0:00'
-  const m = Math.floor(seconds / 60)
-  const s = Math.floor(seconds % 60)
-  return m + ':' + (s < 10 ? '0' : '') + s
-}
-
 // Parse lyrics string into timed lines (simple line-by-line with even distribution)
 function parseLyrics(lyricsText, duration) {
   if (!lyricsText || !duration) return []
@@ -411,7 +405,7 @@ function NowPlayingOverlay({ trackInfo }) {
         <div className="viz-np-progress-fill" style={{ width: (progress * 100) + '%' }} />
       </div>
       <div className="viz-np-time">
-        {formatTime(elapsed)} / {formatTime(duration)}
+        {formatClock(elapsed)} / {formatClock(duration)}
       </div>
     </div>
   )

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.database import get_session
 from server.models.show import Show
 from server.models.show_style import show_styles
-from server.models.station import Station
+from server.models.station import Station, get_station
 from server.utils.timeutils import to_utc_iso
 
 router = APIRouter(prefix="/api/shows", tags=["shows"])
@@ -213,8 +213,7 @@ async def get_active_show(
     Returns:
         The active show, or None.
     """
-    station_result = await session.execute(select(Station).order_by(Station.id).limit(1))
-    station = station_result.scalar_one_or_none()
+    station = await get_station(session)
 
     if station and station.current_show_id:
         result = await session.execute(

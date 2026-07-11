@@ -200,35 +200,6 @@ def _on_talk_segment(event: str, data: dict[str, Any]) -> None:
         logger.info("Event: %s | %s", event, data)
 
 
-def _on_call_event(event: str, data: dict[str, Any]) -> None:
-    """Handle call-related events.
-
-    Args:
-        event: The event name.
-        data: Event data with call details.
-    """
-    action = event.split(".")[-1] if "." in event else event
-    session_id = data.get("session_id", "?")
-
-    if event == "call.moderation_flag":
-        logger.warning(
-            "Call moderation flag: session=%s flags=%s",
-            session_id,
-            data.get("flags", "?"),
-        )
-    else:
-        logger.info(
-            "Call %s: session=%s %s",
-            action,
-            session_id,
-            (
-                f"duration={data['duration']:.1f}s"
-                if data.get("duration") is not None
-                else ""
-            ),
-        )
-
-
 def setup_default_handlers(bus: EventBus) -> None:
     """Register all default handlers on the event bus.
 
@@ -267,14 +238,5 @@ def setup_default_handlers(bus: EventBus) -> None:
     bus.on("talk_segment.generated", _on_talk_segment)
     bus.on("talk_segment.started", _on_talk_segment)
     bus.on("talk_segment.ended", _on_talk_segment)
-
-    # Calls
-    bus.on("call.incoming", _on_call_event)
-    bus.on("call.connected", _on_call_event)
-    bus.on("call.screening", _on_call_event)
-    bus.on("call.on_air", _on_call_event)
-    bus.on("call.ended", _on_call_event)
-    bus.on("call.queued", _on_call_event)
-    bus.on("call.moderation_flag", _on_call_event)
 
     logger.info("Default event handlers registered")

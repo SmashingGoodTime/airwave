@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.config import settings
 from server.engine.audio_pipeline import AudioPipeline
+from server.engine.dj_brain import get_effective_dj_config
 from server.engine.generation_jobs import (
     fail_generation_job,
     finish_generation_job,
@@ -24,18 +25,16 @@ from server.engine.generation_jobs import (
 from server.engine.timeline_mirror import mirror_talk_segment_ready
 from server.events.emitter import event_bus
 from server.models.show import Show
-from server.models.station import Station
+from server.models.station import Station, get_station
 from server.models.talk_segment import TalkSegment
 from server.models.talk_show_config import TalkShowConfig
 from server.models.talk_topic import TalkTopic
 from server.providers.registry import ProviderRegistry
-from server.utils.audio import concat_audio_files, concat_audio_files_variable
+from server.utils.audio import concat_audio_files_variable
 from server.utils.timeutils import resolve_timezone
+from server.utils.voice import parse_voice_settings
 
 logger = logging.getLogger(__name__)
-
-# Default buffer target for talk segments
-TALK_BUFFER_TARGET = 3
 
 
 class TalkShowEngine:
@@ -56,7 +55,11 @@ class TalkShowEngine:
     async def check_and_fill(
         self, session: AsyncSession, show: Show
     ) -> None:
-        """Check talk segment buffer and generate new segments if needed.
+        """Fill the talk segment buffer up to the configured target.
+
+        Generates segments back-to-back until the buffer is full or a
+        generation fails, so the buffer catches up after a drain instead
+        of adding at most one segment per scheduler tick.
 
         Args:
             session: Async database session.
@@ -70,24 +73,32 @@ class TalkShowEngine:
             logger.warning("Show %s has no talk config, cannot generate segments", show.name)
             return
 
-        # Count ready segments
-        result = await session.execute(
-            select(func.count(TalkSegment.id)).where(
-                TalkSegment.status == "ready",
-                TalkSegment.show_id == show.id,
+        target = settings.TALK_BUFFER_TARGET
+        while True:
+            # Count ready segments
+            result = await session.execute(
+                select(func.count(TalkSegment.id)).where(
+                    TalkSegment.status == "ready",
+                    TalkSegment.show_id == show.id,
+                )
             )
-        )
-        ready_count = result.scalar() or 0
+            ready_count = result.scalar() or 0
 
-        logger.debug(
-            "Talk buffer: %d/%d segments for show '%s'",
-            ready_count,
-            TALK_BUFFER_TARGET,
-            show.name,
-        )
+            logger.debug(
+                "Talk buffer: %d/%d segments for show '%s'",
+                ready_count,
+                target,
+                show.name,
+            )
 
-        if ready_count < TALK_BUFFER_TARGET:
-            await self.generate_segment(session, show)
+            if ready_count >= target:
+                return
+
+            segment = await self.generate_segment(session, show)
+            if segment is None:
+                # Generation failed — let the next scheduler tick retry
+                # rather than hammering the providers in a tight loop.
+                return
 
     async def generate_segment(
         self,
@@ -197,13 +208,12 @@ class TalkShowEngine:
             # Render audio
             os.makedirs(self._talks_dir, exist_ok=True)
 
+            host_name = context["speakers"][0]["name"] if context["speakers"] else "Host"
             if topic.topic_type == "monologue":
-                audio_path = await self._render_monologue(
-                    script_text, config, session
-                )
+                audio_path = await self._render_monologue(script_text, config)
             else:
                 audio_path = await self._render_conversation(
-                    script_text, config, session
+                    script_text, config, host_name
                 )
 
             if audio_path:
@@ -212,6 +222,17 @@ class TalkShowEngine:
                 processed = await self._pipeline.process(
                     audio_path, voice=True, delete_source=True
                 )
+                # Sanity check: a rendered segment far shorter than the
+                # script implies means part of the audio was lost (e.g. a
+                # bad stitch). Airing a stub is worse than failing.
+                duration = processed["duration"] or 0.0
+                expected = float(script_result.get("estimated_duration") or 0.0)
+                if duration < 3.0 or (expected >= 20.0 and duration < expected * 0.25):
+                    raise RuntimeError(
+                        f"Rendered talk segment is suspiciously short "
+                        f"({duration:.1f}s vs ~{expected:.0f}s expected from "
+                        f"the script) — discarding instead of airing a stub"
+                    )
                 segment.audio_filepath = processed["processed_path"]
                 segment.duration = processed["duration"]
                 segment.loudness_lufs = processed.get("loudness_lufs")
@@ -401,22 +422,22 @@ class TalkShowEngine:
             Context dict for the scriptwriter.
         """
         # Get station config for timezone
-        result = await session.execute(
-            select(Station).order_by(Station.id).limit(1)
+        station = await get_station(session)
+
+        # The host speaks under the show's DJ persona name (falling back
+        # to "Host"). The same name keys the voice map at render time, so
+        # scripted lines route to the host voice by exact match.
+        dj_config = await get_effective_dj_config(session, show_id=show.id)
+        host_name = (
+            dj_config.dj_name if dj_config and dj_config.dj_name else "Host"
         )
-        station = result.scalar_one_or_none()
 
         # Build speakers list
         speakers = []
         if config.host_voice_id:
-            host_settings = {}
-            if config.host_voice_settings:
-                try:
-                    host_settings = json.loads(config.host_voice_settings)
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            host_settings = parse_voice_settings(config.host_voice_settings)
             speakers.append({
-                "name": show.name.split()[0] if show.name else "Host",
+                "name": host_name,
                 "voice_id": config.host_voice_id,
                 "voice_settings": host_settings,
                 "personality_prompt": config.host_personality_prompt or "",
@@ -431,7 +452,7 @@ class TalkShowEngine:
 
         # If no speakers configured, use defaults
         if not speakers:
-            speakers = [{"name": "Host", "voice_id": "", "personality_prompt": ""}]
+            speakers = [{"name": host_name, "voice_id": "", "personality_prompt": ""}]
 
         # Get recent segment summaries for continuity
         result = await session.execute(
@@ -491,14 +512,13 @@ class TalkShowEngine:
         }
 
     async def _render_monologue(
-        self, script_text: str, config: TalkShowConfig, session: AsyncSession
+        self, script_text: str, config: TalkShowConfig
     ) -> str | None:
         """Render a monologue script to audio using the host voice.
 
         Args:
             script_text: The monologue text.
             config: Talk show configuration with voice settings.
-            session: Async database session.
 
         Returns:
             Path to the rendered audio file, or None.
@@ -509,19 +529,14 @@ class TalkShowEngine:
         if voice is None:
             return None
 
-        voice_config = {"voice_id": config.host_voice_id or ""}
-        if config.host_voice_settings:
-            try:
-                settings = json.loads(config.host_voice_settings)
-                voice_config.update(settings)
-            except (json.JSONDecodeError, TypeError):
-                pass
-
+        voice_config = parse_voice_settings(
+            config.host_voice_settings, config.host_voice_id or ""
+        )
         audio_path = await voice.render(script_text, voice_config)
         return audio_path
 
     async def _render_conversation(
-        self, script_text: str, config: TalkShowConfig, session: AsyncSession
+        self, script_text: str, config: TalkShowConfig, host_name: str = "Host"
     ) -> str | None:
         """Render a multi-voice conversation script to audio.
 
@@ -532,10 +547,14 @@ class TalkShowEngine:
         Args:
             script_text: JSON string of conversation lines.
             config: Talk show configuration with voice settings.
-            session: Async database session.
+            host_name: Speaker name the script uses for the host.
 
         Returns:
             Path to the stitched audio file, or None.
+
+        Raises:
+            AudioProcessingError: If too many lines fail to render or the
+                stitch fails — a partial conversation must not go to air.
         """
         registry = ProviderRegistry.get_instance()
         voice = registry.get_voice_provider()
@@ -548,14 +567,15 @@ class TalkShowEngine:
             lines = json.loads(script_text)
         except (json.JSONDecodeError, TypeError):
             logger.warning("Cannot parse conversation script as JSON, falling back to monologue render")
-            return await self._render_monologue(script_text, config, session)
+            return await self._render_monologue(script_text, config)
 
         if not isinstance(lines, list) or not lines:
             logger.warning("Conversation script is empty or invalid")
-            return await self._render_monologue(script_text, config, session)
+            return await self._render_monologue(script_text, config)
 
         # Build voice config map: speaker name -> voice config
-        voice_configs = self._build_voice_config_map(config)
+        voice_configs = self._build_voice_config_map(config, host_name)
+        host_voice = voice_configs.get(host_name, {"voice_id": ""})
 
         # Pace-to-gap mapping (seconds of silence before this line)
         pace_gaps = {
@@ -570,57 +590,71 @@ class TalkShowEngine:
         # Render each line and track per-line gaps
         audio_files: list[str] = []
         line_gaps: list[float] = []
+        failed_lines = 0
         segment_id = uuid.uuid4().hex[:8]
+        stitched: str | None = None
 
-        for i, line in enumerate(lines):
-            speaker = line.get("speaker", "Unknown")
-            text = line.get("text", "")
-            if not text.strip():
-                continue
+        try:
+            for i, line in enumerate(lines):
+                if not isinstance(line, dict):
+                    continue
+                speaker = line.get("speaker", "Unknown")
+                text = line.get("text", "")
+                if not text.strip():
+                    continue
 
-            vc = voice_configs.get(speaker, voice_configs.get("Host", {"voice_id": ""}))
+                vc = voice_configs.get(speaker, host_voice)
 
-            try:
-                line_path = await voice.render(text, vc)
-                audio_files.append(line_path)
+                try:
+                    line_path = await voice.render(text, vc)
+                    audio_files.append(line_path)
 
-                # Determine gap before this line (first line gets no leading gap)
-                if i == 0:
-                    line_gaps.append(0.0)
-                else:
-                    pace = line.get("pace", "normal")
-                    line_gaps.append(pace_gaps.get(pace, default_gap))
-            except Exception as exc:
-                logger.warning(
-                    "Failed to render line %d (speaker: %s): %s", i, speaker, exc
+                    # Determine gap before this line (first line gets no leading gap)
+                    if not line_gaps:
+                        line_gaps.append(0.0)
+                    else:
+                        pace = line.get("pace", "normal")
+                        line_gaps.append(pace_gaps.get(pace, default_gap))
+                except Exception as exc:
+                    failed_lines += 1
+                    logger.warning(
+                        "Failed to render line %d (speaker: %s): %s", i, speaker, exc
+                    )
+                    continue
+
+            if not audio_files:
+                logger.warning("No audio files generated for conversation")
+                return None
+
+            # A conversation missing a chunk of its lines is broken on
+            # air (replies to lines nobody hears) — fail it instead.
+            if failed_lines > len(lines) * 0.2:
+                raise RuntimeError(
+                    f"{failed_lines}/{len(lines)} conversation lines failed "
+                    f"to render — discarding segment"
                 )
-                continue
 
-        if not audio_files:
-            logger.warning("No audio files generated for conversation")
-            return None
+            os.makedirs(self._talks_dir, exist_ok=True)
+            output_path = os.path.join(
+                self._talks_dir, f"conversation_{segment_id}.wav"
+            )
 
-        output_path = os.path.join(
-            self._talks_dir, f"conversation_{segment_id}.wav"
-        )
-
-        # Use variable-gap stitching if we have per-line gaps
-        stitched = await concat_audio_files_variable(
-            audio_files, line_gaps, output_path
-        )
-
-        # Delete per-line renders after a successful stitch. Concat helpers
-        # may return an input file as a fallback, so never delete the file
-        # that was returned.
-        if stitched:
+            # Stitch with per-line gaps; raises on failure.
+            stitched = await concat_audio_files_variable(
+                audio_files, line_gaps, output_path
+            )
+            return stitched
+        finally:
+            # Per-line renders are intermediates — remove them on success
+            # AND failure so aborted generations don't litter the breaks
+            # directory. A single-line "conversation" is returned as-is,
+            # so never delete the file that was handed back.
             for line_path in audio_files:
                 if line_path != stitched:
                     try:
                         os.remove(line_path)
                     except OSError:
                         pass
-
-        return stitched
 
     @staticmethod
     def _extract_summary(script_text: str | None, segment_type: str) -> str:
@@ -647,6 +681,8 @@ class TalkShowEngine:
                     snippets = []
                     word_count = 0
                     for line in lines[:5]:
+                        if not isinstance(line, dict):
+                            continue
                         text = line.get("text", "")
                         if len(text.split()) < 3:
                             continue
@@ -662,11 +698,16 @@ class TalkShowEngine:
         words = script_text.split()
         return " ".join(words[:40]) + ("..." if len(words) > 40 else "")
 
-    def _build_voice_config_map(self, config: TalkShowConfig) -> dict[str, dict]:
+    def _build_voice_config_map(
+        self, config: TalkShowConfig, host_name: str = "Host"
+    ) -> dict[str, dict]:
         """Build a mapping of speaker names to voice configurations.
 
         Args:
             config: Talk show configuration.
+            host_name: Speaker name the script uses for the host — the
+                host voice is keyed under this name (and "Host") so
+                script lines resolve to it by exact match.
 
         Returns:
             Dict mapping speaker name to voice config dict.
@@ -674,14 +715,11 @@ class TalkShowEngine:
         voice_map: dict[str, dict] = {}
 
         # Host voice
-        host_config: dict = {"voice_id": config.host_voice_id or ""}
-        if config.host_voice_settings:
-            try:
-                settings = json.loads(config.host_voice_settings)
-                host_config.update(settings)
-            except (json.JSONDecodeError, TypeError):
-                pass
+        host_config = parse_voice_settings(
+            config.host_voice_settings, config.host_voice_id or ""
+        )
         voice_map["Host"] = host_config
+        voice_map[host_name] = host_config
 
         # Co-host voices
         if config.cohost_voices:

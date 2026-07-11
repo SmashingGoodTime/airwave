@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { formatClock } from '../utils/format'
 
 function NowPlaying({ track }) {
   const [elapsed, setElapsed] = useState(0)
@@ -38,12 +39,6 @@ function NowPlaying({ track }) {
   const duration = track.duration || 0
   const progress = duration > 0 ? Math.min((elapsed / duration) * 100, 100) : 0
 
-  function formatTime(seconds) {
-    const m = Math.floor(seconds / 60)
-    const s = Math.floor(seconds % 60)
-    return `${m}:${String(s).padStart(2, '0')}`
-  }
-
   return (
     <div className="now-playing">
       <div className="now-playing-title">{track.title || 'Untitled'}</div>
@@ -52,8 +47,8 @@ function NowPlaying({ track }) {
         <div className="progress-bar-fill" style={{ width: `${progress}%` }} />
       </div>
       <div className="progress-time">
-        <span>{formatTime(elapsed)}</span>
-        <span>{duration > 0 ? formatTime(duration) : '--:--'}</span>
+        <span>{formatClock(elapsed)}</span>
+        <span>{duration > 0 ? formatClock(duration) : '--:--'}</span>
       </div>
     </div>
   )

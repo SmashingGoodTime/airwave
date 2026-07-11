@@ -3,7 +3,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_serializer
@@ -12,9 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.database import get_session
 from server.models.dj_config import DJConfig
-from server.models.station import Station
+from server.models.station import get_station
 from server.providers.registry import ProviderRegistry
-from server.utils.timeutils import to_utc_iso, utcnow_naive
+from server.utils.timeutils import resolve_timezone, to_utc_iso, utcnow_naive
+from server.utils.voice import parse_voice_settings
 
 router = APIRouter(prefix="/api/dj", tags=["dj"])
 
@@ -396,13 +396,8 @@ async def preview_dj_break(
     config = await _load_default_config(session)
 
     # Convert to station timezone
-    station_result = await session.execute(select(Station).order_by(Station.id).limit(1))
-    station = station_result.scalar_one_or_none()
-    station_tz_str = station.timezone if station and station.timezone else "UTC"
-    try:
-        station_tz = ZoneInfo(station_tz_str)
-    except (KeyError, Exception):
-        station_tz = ZoneInfo("UTC")
+    station = await get_station(session)
+    station_tz = resolve_timezone(station.timezone if station else None)
     local_now = datetime.now(timezone.utc).astimezone(station_tz)
 
     context = {
@@ -423,16 +418,9 @@ async def preview_dj_break(
         # Optionally render audio if voice provider is available
         audio_url = None
         if voice and config and config.voice_id:
-            import json
-
-            voice_settings = {}
-            if config.voice_settings:
-                try:
-                    voice_settings = json.loads(config.voice_settings)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            voice_settings["voice_id"] = config.voice_id
-
+            voice_settings = parse_voice_settings(
+                config.voice_settings, config.voice_id
+            )
             audio_path = await voice.render(script_text, voice_settings)
             audio_url = f"/audio/breaks/{Path(audio_path).name}"
 

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.database import get_session
 from server.models.dj_config import DJConfig
-from server.models.station import Station
+from server.models.station import Station, get_station
 from server.models.style import Style
 from server.utils.env import update_env_file
 
@@ -55,8 +55,7 @@ async def get_setup_status(
     Returns:
         A dict with setup_complete boolean.
     """
-    result = await session.execute(select(Station).limit(1))
-    station = result.scalar_one_or_none()
+    station = await get_station(session)
     if station is None:
         return {"setup_complete": False}
     return {"setup_complete": station.setup_complete}
@@ -82,8 +81,7 @@ async def complete_setup(
     """
     # Update the existing singleton Station row (seeded by init_db) rather
     # than inserting a second one that no reader would ever see.
-    result = await session.execute(select(Station).order_by(Station.id).limit(1))
-    station = result.scalar_one_or_none()
+    station = await get_station(session)
     if station is None:
         station = Station()
         session.add(station)

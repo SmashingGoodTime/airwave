@@ -18,7 +18,7 @@ from server.engine.generation_jobs import (
 from server.engine.timeline_mirror import mirror_track_ready
 from server.events.emitter import event_bus
 from server.models.show_style import show_styles
-from server.models.station import Station
+from server.models.station import Station, get_station
 from server.models.style import Style
 from server.models.track import Track
 from server.providers.registry import ProviderRegistry
@@ -73,10 +73,7 @@ class MusicBufferManager:
             return
 
         # Get station config
-        result = await session.execute(
-            select(Station).order_by(Station.id).limit(1)
-        )
-        station = result.scalar_one_or_none()
+        station = await get_station(session)
         buffer_target = station.buffer_target if station else 3
         buffer_warning = station.buffer_warning_threshold if station else 2
 

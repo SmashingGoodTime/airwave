@@ -10,10 +10,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from server.providers.base import (
-    ConversationAIProvider,
     MusicProvider,
     ScriptWriterProvider,
-    TelephonyProvider,
     VoiceProvider,
 )
 
@@ -23,13 +21,7 @@ logger = logging.getLogger(__name__)
 # every dashboard poll / WebSocket snapshot.
 HEALTH_CACHE_TTL = 60.0
 
-ProviderInstance = (
-    MusicProvider
-    | ScriptWriterProvider
-    | VoiceProvider
-    | TelephonyProvider
-    | ConversationAIProvider
-)
+ProviderInstance = MusicProvider | ScriptWriterProvider | VoiceProvider
 ProviderFactory = Callable[["ProviderFactoryContext"], ProviderInstance]
 
 
@@ -129,16 +121,6 @@ def _gemini_factory(ctx: ProviderFactoryContext) -> ProviderInstance:
     return ctx.provider_cls(**kwargs)
 
 
-def _twilio_factory(ctx: ProviderFactoryContext) -> ProviderInstance:
-    """Build a Twilio telephony provider."""
-    return ctx.provider_cls(
-        account_sid=ctx.value("TWILIO_ACCOUNT_SID"),
-        auth_token=ctx.value("TWILIO_AUTH_TOKEN"),
-        phone_number=ctx.value("TWILIO_PHONE_NUMBER"),
-        webhook_base_url=ctx.value("CALL_WEBHOOK_BASE_URL"),
-    )
-
-
 BUILTIN_PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
     ProviderDefinition(
         key="suno",
@@ -191,8 +173,6 @@ class ProviderRegistry:
         self._music: Optional[MusicProvider] = None
         self._scriptwriter: Optional[ScriptWriterProvider] = None
         self._voice: Optional[VoiceProvider] = None
-        self._telephony: Optional[TelephonyProvider] = None
-        self._conversation: Optional[ConversationAIProvider] = None
         self._voice_providers: dict[str, VoiceProvider] = {}
         self._provider_keys: dict[str, str] = {}
         self._provider_names: dict[str, str] = {}
@@ -247,14 +227,6 @@ class ProviderRegistry:
         self._provider_keys["voice"] = key
         self._clear_health_cache()
         return True
-
-    def get_telephony_provider(self) -> Optional[TelephonyProvider]:
-        """Return the configured telephony provider, if any."""
-        return self._telephony
-
-    def get_conversation_provider(self) -> Optional[ConversationAIProvider]:
-        """Return the configured conversation AI provider, if any."""
-        return self._conversation
 
     async def initialize(self, config: object) -> None:
         """Read config and instantiate provider implementations.
@@ -364,8 +336,6 @@ class ProviderRegistry:
                 self._music,
                 self._scriptwriter,
                 self._voice,
-                self._telephony,
-                self._conversation,
                 *self._voice_providers.values(),
             )
             if provider is not None
@@ -376,8 +346,6 @@ class ProviderRegistry:
         self._music = None
         self._scriptwriter = None
         self._voice = None
-        self._telephony = None
-        self._conversation = None
         self._voice_providers = {}
         self._provider_keys = {}
         self._provider_names = {}
@@ -406,8 +374,6 @@ class ProviderRegistry:
         return {
             "music": self._music,
             "scriptwriter": self._scriptwriter,
-            "telephony": self._telephony,
-            "conversation": self._conversation,
         }.get(capability) is not None
 
     def _register_provider(
@@ -427,12 +393,6 @@ class ProviderRegistry:
         elif definition.capability == "voice":
             voice = provider  # type: ignore[assignment]
             self._voice_providers[definition.key] = voice
-        elif definition.capability == "telephony":
-            self._telephony = provider  # type: ignore[assignment]
-            self._provider_keys["telephony"] = definition.key
-        elif definition.capability == "conversation":
-            self._conversation = provider  # type: ignore[assignment]
-            self._provider_keys["conversation"] = definition.key
 
     def _select_default_voice_provider(self) -> None:
         """Choose the active voice provider by stable preference order."""

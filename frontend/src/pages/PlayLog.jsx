@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { fetchPlayLog, exportPlayLog } from '../api'
+import { formatDuration, formatTimestamp } from '../utils/format'
 
 function PlayLog() {
   const [entries, setEntries] = useState([])
@@ -70,19 +71,6 @@ function PlayLog() {
     } finally {
       setExporting(false)
     }
-  }
-
-  function formatDuration(seconds) {
-    if (!seconds) return '--'
-    const m = Math.floor(seconds / 60)
-    const s = Math.floor(seconds % 60)
-    return `${m}:${String(s).padStart(2, '0')}`
-  }
-
-  function formatTimestamp(ts) {
-    if (!ts) return '--'
-    const d = new Date(ts)
-    return d.toLocaleString()
   }
 
   return (

@@ -8,6 +8,7 @@ See: https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech
 """
 
 import logging
+import struct
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -104,6 +105,59 @@ FISH_VOICES = [
         "description": "A warm and sincere middle-aged male voice with a deep, smooth tone and a touch of raspiness.",
     },
 ]
+
+
+def _fix_wav_header(filepath: Path) -> None:
+    """Rewrite the RIFF and data chunk sizes to match the actual file size.
+
+    Fish Audio streams WAV, so the header is written before the length is
+    known and carries ~4GB placeholder sizes (0xFFFFFFxx). FFmpeg tolerates
+    this for simple decodes, but multi-input filter graphs (the conversation
+    stitcher) have produced corrupt output on such lying headers, so the
+    sizes are corrected in place right after download.
+
+    Non-RIFF files are left untouched — downstream FFmpeg then fails
+    loudly, which is the correct behaviour for an unexpected payload.
+
+    Args:
+        filepath: Path to the freshly downloaded WAV file.
+    """
+    try:
+        file_size = filepath.stat().st_size
+        if file_size < 44:
+            return
+        with open(filepath, "r+b") as f:
+            header = f.read(12)
+            if header[0:4] != b"RIFF" or header[8:12] != b"WAVE":
+                return
+
+            declared_riff = struct.unpack("<I", header[4:8])[0]
+            actual_riff = file_size - 8
+            if declared_riff != actual_riff:
+                f.seek(4)
+                f.write(struct.pack("<I", actual_riff))
+
+            # Walk chunks to find "data" and fix its declared size.
+            offset = 12
+            while offset + 8 <= file_size:
+                f.seek(offset)
+                chunk_header = f.read(8)
+                chunk_id = chunk_header[0:4]
+                chunk_size = struct.unpack("<I", chunk_header[4:8])[0]
+                if chunk_id == b"data":
+                    actual_data = file_size - (offset + 8)
+                    if chunk_size != actual_data:
+                        f.seek(offset + 4)
+                        f.write(struct.pack("<I", actual_data))
+                        logger.debug(
+                            "Fixed WAV data chunk size for %s: %d -> %d",
+                            filepath.name, chunk_size, actual_data,
+                        )
+                    return
+                # Chunks are word-aligned
+                offset += 8 + chunk_size + (chunk_size % 2)
+    except OSError as exc:
+        logger.warning("Could not fix WAV header for %s: %s", filepath, exc)
 
 
 class FishAudioVoiceProvider(VoiceProvider):
@@ -284,6 +338,9 @@ class FishAudioVoiceProvider(VoiceProvider):
             file_id = uuid.uuid4().hex[:12]
             filepath = self._audio_dir / f"break_{file_id}.wav"
             filepath.write_bytes(audio_bytes)
+            # Fish streams WAV with placeholder chunk sizes — correct them
+            # before the file enters any FFmpeg filter graph.
+            _fix_wav_header(filepath)
 
             size_mb = filepath.stat().st_size / 1e6
             logger.info(

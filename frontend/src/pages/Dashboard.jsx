@@ -23,6 +23,7 @@ import NowPlaying from '../components/NowPlaying'
 import BufferStatus from '../components/BufferStatus'
 import HealthIndicators from '../components/HealthIndicators'
 import AudioPlayer from '../components/AudioPlayer'
+import { formatDuration, formatTimeOfDay } from '../utils/format'
 
 const panelStyle = {
   background: '#111126',
@@ -837,7 +838,7 @@ function RecentPlayTable({ plays }) {
         <tbody>
           {plays.map((play, index) => (
             <tr key={play.id || index}>
-              <td>{formatTimestamp(play.played_at || play.started_at || play.timestamp)}</td>
+              <td>{formatTimeOfDay(play.played_at || play.started_at || play.timestamp)}</td>
               <td>
                 <span className={`badge badge-${play.type === 'track' || play.item_type === 'track' ? 'track' : 'break'}`}>
                   {play.type || play.item_type}
@@ -948,20 +949,6 @@ function Diagnostics({ timelineHealth, timelineItems, generationJobs }) {
       </div>
     </div>
   )
-}
-
-function formatDuration(seconds) {
-  if (!seconds) return '--'
-  const mins = Math.floor(seconds / 60)
-  const secs = String(Math.floor(seconds % 60)).padStart(2, '0')
-  return `${mins}:${secs}`
-}
-
-function formatTimestamp(value) {
-  if (!value) return '--'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '--'
-  return date.toLocaleTimeString()
 }
 
 export default Dashboard

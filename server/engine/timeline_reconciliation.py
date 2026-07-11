@@ -219,13 +219,13 @@ async def _count_duplicate_source_mirrors(session: AsyncSession) -> int:
 async def _count_legacy_ready_missing_timeline(session: AsyncSession) -> int:
     total = 0
     for source_table, model, id_column in SOURCE_MODELS:
-        total += await _count_unmirrored_ready_source(
+        total += await count_unmirrored_ready_source(
             session, source_table, model, id_column
         )
     return total
 
 
-async def _count_unmirrored_ready_source(
+async def count_unmirrored_ready_source(
     session: AsyncSession,
     source_table: str,
     model: type,

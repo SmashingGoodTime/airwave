@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.database import get_session_factory
-from server.models.station import Station
+from server.models.station import Station, get_station
 from server.models.show import Show
 from server.utils.timeutils import to_utc_iso, utcnow_naive
 
@@ -37,10 +37,7 @@ async def _apply_station_update(
         HTTPException: 400 on an invalid broadcast_mode, 404 if the
             requested show does not exist.
     """
-    result = await session.execute(
-        select(Station).order_by(Station.id).limit(1)
-    )
-    station = result.scalar_one_or_none()
+    station = await get_station(session)
     if not station:
         return
     if body.broadcast_mode:
@@ -68,10 +65,7 @@ async def get_streaming_status(request: Request) -> dict:
 
     factory = get_session_factory()
     async with factory() as session:
-        result = await session.execute(
-            select(Station).order_by(Station.id).limit(1)
-        )
-        station = result.scalar_one_or_none()
+        station = await get_station(session)
         
         broadcast_mode = station.broadcast_mode if station else "manual"
         current_show_id = station.current_show_id if station else None

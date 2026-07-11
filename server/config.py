@@ -29,8 +29,9 @@ class Settings(BaseSettings):
     AUDIO_DIR: str = "./audio"
     LIQUIDSOAP_HOST: str = "liquidsoap"
     LIQUIDSOAP_PORT: int = 1234
-    LIQUIDSOAP_HARBOR_PORT: int = 8005
     ICECAST_URL: str = "http://localhost:8080/stream"
+    # How many talk segments to keep rendered ahead of playout.
+    TALK_BUFFER_TARGET: int = 3
 
     # Comma-separated list of allowed CORS origins for the browser UI. Defaults
     # to common local-dev origins. Set to "*" only if you understand that the

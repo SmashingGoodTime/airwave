@@ -26,11 +26,12 @@ from server.models.dj_break import DJBreak
 from server.models.dj_config import DJConfig
 from server.models.playlog import PlayLog
 from server.models.show import Show
-from server.models.station import Station
+from server.models.station import Station, get_station
 from server.models.style import Style
 from server.models.track import Track
 from server.providers.registry import ProviderRegistry
 from server.utils.timeutils import resolve_timezone, utcnow_naive
+from server.utils.voice import parse_voice_settings
 
 logger = logging.getLogger(__name__)
 
@@ -426,10 +427,7 @@ class DJBrain:
         dj_config = await get_effective_dj_config(session, show_id=show_id)
 
         # Get station config for timezone
-        result = await session.execute(
-            select(Station).order_by(Station.id).limit(1)
-        )
-        station = result.scalar_one_or_none()
+        station = await get_station(session)
 
         # Get recent tracks with their style info.
         # Fetch extra rows equal to queue_offset so we can skip tracks
@@ -581,15 +579,9 @@ class DJBrain:
         if dj_config is None:
             return {"voice_id": "Aoede"}  # Default Gemini TTS voice
 
-        voice_settings = {}
-        if dj_config.voice_settings:
-            try:
-                voice_settings = json.loads(dj_config.voice_settings)
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        voice_settings["voice_id"] = dj_config.voice_id or "Aoede"
-        return voice_settings
+        return parse_voice_settings(
+            dj_config.voice_settings, dj_config.voice_id or "Aoede"
+        )
 
     async def increment_announcement_plays(
         self, session: AsyncSession, announcement_ids: list[int]

@@ -86,10 +86,6 @@ export function toggleStyle(id) {
   return apiFetch(`/styles/${id}/toggle`, { method: 'POST' })
 }
 
-export function reorderStyles(data) {
-  return apiFetch('/styles/reorder', { method: 'POST', body: data })
-}
-
 // Announcements
 export function fetchAnnouncements(active) {
   const params = active !== undefined ? `?active=${active}` : ''
@@ -111,10 +107,6 @@ export function deleteAnnouncement(id) {
 // DJ Config
 export function fetchDJConfig() {
   return apiFetch('/dj/config')
-}
-
-export function updateDJConfig(data) {
-  return apiFetch('/dj/config', { method: 'PUT', body: data })
 }
 
 export function previewDJBreak(data) {
@@ -224,10 +216,6 @@ export function deleteShow(id) {
 
 export function toggleShow(id) {
   return apiFetch(`/shows/${id}/toggle`, { method: 'POST' })
-}
-
-export function fetchActiveShow() {
-  return apiFetch('/shows/active')
 }
 
 // Talk Show Configs

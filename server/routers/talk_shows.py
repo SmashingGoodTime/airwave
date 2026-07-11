@@ -452,7 +452,7 @@ async def preview_talk_segment(
 
     engine = TalkShowEngine()
     segment = await engine.generate_segment(
-        session, temp_show, config, topic_id=body.topic_id
+        session, temp_show, config, topic_id=body.topic_id, preview=True
     )
 
     if segment is None:

@@ -1,11 +1,11 @@
 """Helpers for recording source playout state into timeline mirror rows."""
 
-from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.models.program_item import ProgramItem
+from server.utils.timeutils import utcnow_naive
 
 
 async def mark_source_playing(
@@ -29,7 +29,7 @@ async def mark_source_playing(
     if item.status == "played":
         return item
 
-    now = _now()
+    now = utcnow_naive()
     item.status = "playing"
     if item.queued_at is None:
         item.queued_at = now
@@ -51,7 +51,7 @@ async def mark_source_played(
 
     item.status = "played"
     if item.ended_at is None:
-        item.ended_at = _now()
+        item.ended_at = utcnow_naive()
     await session.flush()
     return item
 
@@ -68,7 +68,7 @@ async def mark_source_failed(
 
     item.status = "failed"
     if item.ended_at is None:
-        item.ended_at = _now()
+        item.ended_at = utcnow_naive()
     await session.flush()
     return item
 
@@ -87,7 +87,3 @@ async def _get_source_item(
     )
     return result.scalar_one_or_none()
 
-
-def _now() -> datetime:
-    """Return the current UTC timestamp."""
-    return datetime.now(timezone.utc)

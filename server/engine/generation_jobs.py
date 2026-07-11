@@ -1,12 +1,12 @@
 """Helpers for durable AI generation job lifecycle tracking."""
 
 import json
-from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.models.generation_job import GenerationJob
+from server.utils.timeutils import utcnow_naive
 
 
 async def start_generation_job(
@@ -27,7 +27,7 @@ async def start_generation_job(
         priority=priority,
         attempts=1,
         input_json=_to_json(input_data),
-        started_at=_now(),
+        started_at=utcnow_naive(),
     )
     session.add(job)
     await session.flush()
@@ -45,7 +45,7 @@ async def finish_generation_job(
     job.status = "succeeded"
     job.output_json = _to_json(output_data)
     job.output_asset_id = output_asset_id
-    job.finished_at = _now()
+    job.finished_at = utcnow_naive()
     await session.flush()
     return job
 
@@ -58,7 +58,7 @@ async def fail_generation_job(
     """Mark a generation job as failed."""
     job.status = "failed"
     job.error_message = str(error)
-    job.finished_at = _now()
+    job.finished_at = utcnow_naive()
     await session.flush()
     return job
 
@@ -69,7 +69,3 @@ def _to_json(data: dict[str, Any] | None) -> str | None:
         return None
     return json.dumps(data, default=str)
 
-
-def _now() -> datetime:
-    """Return the current UTC timestamp."""
-    return datetime.now(timezone.utc)

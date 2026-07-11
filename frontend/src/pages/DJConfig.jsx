@@ -4,6 +4,7 @@ import {
   setDefaultDJConfig, previewDJBreak, fetchVoices, fetchVoiceProviders,
 } from '../api'
 import useVoiceSample from '../hooks/useVoiceSample'
+import VoiceSelect from '../components/VoiceSelect'
 
 const EXAMPLE_PERSONALITY = `You're a warm, friendly DJ with a laid-back vibe. You love discovering new music and sharing fun facts. You speak casually like you're talking to a friend — never stiff or formal. You occasionally make gentle jokes and always keep the energy positive. You like to comment on the mood of the music and what time of day it is.`
 
@@ -311,73 +312,16 @@ function DJConfig() {
                 <div className="form-section">
                   <h3>Voice</h3>
 
-                  <div className="form-group">
-                    <label>DJ Voice</label>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                      <select
-                        value={form.voice_id}
-                        onChange={e => updateField('voice_id', e.target.value)}
-                        disabled={voicesLoading}
-                        style={{ flex: 1 }}
-                      >
-                        <option value="">{voicesLoading ? 'Loading voices...' : 'Select a voice...'}</option>
-                        {(() => {
-                          const groups = {}
-                          for (const v of voices) {
-                            const cat = v.category || 'other'
-                            if (!groups[cat]) groups[cat] = []
-                            groups[cat].push(v)
-                          }
-                          const preferredOrder = ['bright', 'warm', 'deep', 'radio', 'vintage', 'specialty', 'other']
-                          const labels = { 
-                            bright: 'Bright & Energetic', 
-                            warm: 'Warm & Smooth', 
-                            deep: 'Deep & Rich', 
-                            radio: 'Radio Host', 
-                            vintage: 'Vintage Radio', 
-                            specialty: 'Specialty', 
-                            other: 'Other' 
-                          }
-                          const allCats = Object.keys(groups)
-                          const order = [...preferredOrder.filter(cat => groups[cat]), ...allCats.filter(cat => !preferredOrder.includes(cat))]
-                          return order
-                            .map(cat => (
-                              <optgroup key={cat} label={labels[cat] || cat}>
-                                {groups[cat].map(v => (
-                                  <option key={v.voice_id} value={v.voice_id}>
-                                    {v.name}
-                                  </option>
-                                ))}
-                              </optgroup>
-                            ))
-                        })()}
-                      </select>
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        style={{ padding: '0 16px', height: '40px', minWidth: '95px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
-                        disabled={!form.voice_id || loadingSample || voicesLoading}
-                        onClick={() => playSample(form.voice_id)}
-                      >
-                        {loadingSample ? (
-                          <span>Loading...</span>
-                        ) : playingId === form.voice_id ? (
-                          <>
-                            <span style={{ fontSize: '10px' }}>■</span> Stop
-                          </>
-                        ) : (
-                          <>
-                            <span style={{ fontSize: '12px' }}>▶</span> Play
-                          </>
-                        )}
-                      </button>
-                    </div>
-                    {voices.length === 0 && !voicesLoading && (
-                      <div className="help-text">
-                        No voices loaded. Make sure your API key is configured for the selected voice provider.
-                      </div>
-                    )}
-                  </div>
+                  <VoiceSelect
+                    label="DJ Voice"
+                    value={form.voice_id}
+                    onChange={value => updateField('voice_id', value)}
+                    voices={voices}
+                    loading={voicesLoading}
+                    playingId={playingId}
+                    loadingSample={loadingSample}
+                    onPlaySample={playSample}
+                  />
                 </div>
 
                 <div className="form-section">

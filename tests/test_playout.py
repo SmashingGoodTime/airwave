@@ -2,11 +2,10 @@
 
 Verifies the exact telnet command strings sent (annotate: URI format),
 error-reply detection (no method may report success on an unknown-command
-reply), and the deprecated update_metadata stub. Telnet I/O is replaced by
+reply). Telnet I/O is replaced by
 a fake _send_command that records commands and returns canned replies.
 """
 
-import logging
 from pathlib import Path
 
 import pytest
@@ -196,33 +195,6 @@ async def test_get_queue_length_zero_on_error_reply(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Live caller gate
-# ---------------------------------------------------------------------------
-
-
-async def test_start_live_input_verifies_ok_reply(monkeypatch):
-    playout, fake = make_playout(
-        monkeypatch, replies={"caller.set true": "OK caller_enabled=true"}
-    )
-
-    assert await playout.start_live_input() is True
-    assert fake.commands == ["caller.set true"]
-
-
-async def test_stop_live_input_fails_on_error_reply(monkeypatch):
-    playout, fake = make_playout(monkeypatch, default=UNKNOWN_COMMAND)
-
-    assert await playout.stop_live_input() is False
-    assert fake.commands == ["caller.set false"]
-
-
-async def test_start_live_input_fails_without_ok(monkeypatch):
-    playout, _ = make_playout(monkeypatch, default="")
-
-    assert await playout.start_live_input() is False
-
-
-# ---------------------------------------------------------------------------
 # Status / metadata retrieval
 # ---------------------------------------------------------------------------
 
@@ -268,27 +240,6 @@ async def test_get_status_handles_undef_remaining_and_errors(monkeypatch):
     assert status["remaining"] is None
     assert status["metadata"] == {}
     assert status["current_title"] is None
-
-
-# ---------------------------------------------------------------------------
-# Deprecated update_metadata stub
-# ---------------------------------------------------------------------------
-
-
-async def test_update_metadata_is_deprecated_stub(monkeypatch, caplog):
-    monkeypatch.setattr(PlayoutInterface, "_update_metadata_warned", False)
-    playout, fake = make_playout(monkeypatch)
-
-    with caplog.at_level(logging.WARNING, logger="server.engine.playout"):
-        assert await playout.update_metadata("Title", "Artist") is False
-        assert await playout.update_metadata("Other", "Artist") is False
-
-    # No telnet traffic, and the deprecation warning fires exactly once.
-    assert fake.commands == []
-    warnings = [
-        rec for rec in caplog.records if "deprecated" in rec.getMessage()
-    ]
-    assert len(warnings) == 1
 
 
 # ---------------------------------------------------------------------------

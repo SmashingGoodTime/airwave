@@ -1363,7 +1363,9 @@ class TestTalkShowRouter:
 
         expected_topic_id = None
 
-        async def fake_generate_segment(self, session, show, config=None, topic_id=None):
+        async def fake_generate_segment(
+            self, session, show, config=None, topic_id=None, preview=False
+        ):
             class Segment:
                 id = 123
                 segment_type = "conversation"
@@ -1373,6 +1375,8 @@ class TestTalkShowRouter:
                 audio_filepath = "audio/talks/preview.wav"
 
             assert topic_id == expected_topic_id
+            # Router previews must never touch rotation/timeline state.
+            assert preview is True
             return Segment()
 
         monkeypatch.setattr(TalkShowEngine, "generate_segment", fake_generate_segment)

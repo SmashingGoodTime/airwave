@@ -37,7 +37,7 @@ from server.models.dj_config import DJConfig
 from server.models.generation_job import GenerationJob
 from server.models.playlog import PlayLog
 from server.models.show import Show
-from server.models.station import Station
+from server.models.station import Station, get_station
 from server.models.talk_segment import TalkSegment
 from server.models.track import Track
 from server.utils.timeutils import to_utc_iso, utcnow_naive
@@ -85,6 +85,8 @@ class MasterScheduler:
         # Pre-generated DJ break ready for immediate queueing
         self._pending_break: DJBreak | None = None
         self._pending_break_task: asyncio.Task | None = None
+        # Background talk-segment buffer fill (talk/hybrid shows)
+        self._talk_fill_task: asyncio.Task | None = None
         # True while a startup/show-transition intro is being generated —
         # the playout loop must not queue anything ahead of the intro.
         self._intro_pending = False
@@ -174,6 +176,10 @@ class MasterScheduler:
             self._pending_break_task = None
             self._pending_break = None
 
+        if self._talk_fill_task is not None:
+            self._talk_fill_task.cancel()
+            self._talk_fill_task = None
+
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks = []
@@ -201,6 +207,9 @@ class MasterScheduler:
         async with factory() as session:
             active_show = await self._get_active_show(session)
             show_type = active_show.show_type if active_show else "music"
+            talk_show = active_show
+            if show_type in ("talk", "hybrid") and not talk_show:
+                talk_show = await self._get_talk_show_fallback(session)
 
         self._streaming_show_type = show_type
         self._current_show_id = active_show.id if active_show else None
@@ -211,6 +220,12 @@ class MasterScheduler:
         self._intro_pending = True
         self._streaming = True
         logger.info("Streaming started (show_type=%s)", show_type)
+
+        # Talk segments take minutes to render — start filling the buffer
+        # immediately so the first segment generates while the intro is
+        # being produced and aired, not after.
+        if show_type in ("talk", "hybrid") and talk_show is not None:
+            self._start_talk_fill(talk_show.id)
 
         try:
             # Wait for Liquidsoap telnet to be ready before queueing anything
@@ -316,10 +331,7 @@ class MasterScheduler:
         try:
             factory = get_session_factory()
             async with factory() as session:
-                result = await session.execute(
-                    select(Station).order_by(Station.id).limit(1)
-                )
-                station = result.scalar_one_or_none()
+                station = await get_station(session)
             if station is None:
                 return
 
@@ -440,9 +452,11 @@ class MasterScheduler:
     async def _buffer_loop(self, session: AsyncSession) -> None:
         """Check buffer depth and generate content based on active show type.
 
-        Always keeps the music buffer filled regardless of streaming state,
-        so tracks are ready when streaming starts. Talk segments are only
-        generated while streaming is active.
+        Talk segments (talk/hybrid shows) are generated in a background
+        task so slow music generation can never starve the talk buffer —
+        the two run concurrently. During a pure talk show the music buffer
+        is left alone: tracks would never air, so generating them only
+        burns music-provider credits.
 
         Args:
             session: Async database session.
@@ -450,33 +464,61 @@ class MasterScheduler:
         # Determine active show for style/DJ filtering
         active_show = await self._get_active_show(session)
         show_id = active_show.id if active_show else None
-
-        # Always fill the music buffer so tracks are ready before streaming
-        await self._buffer_manager.check_and_fill(session, show_id=show_id)
-
-        if not self._streaming:
-            return
         show_type = (
             active_show.show_type if active_show
             else (self._streaming_show_type or "music")
         )
 
-        # Resolve a talk-capable show for talk/hybrid modes
-        talk_show = active_show
-        if show_type in ("talk", "hybrid") and not talk_show:
-            talk_show = await self._get_talk_show_fallback(session)
+        if self._streaming and show_type in ("talk", "hybrid"):
+            # Resolve a talk-capable show and top up its segment buffer
+            # in the background (own DB session).
+            talk_show = active_show
             if not talk_show:
+                talk_show = await self._get_talk_show_fallback(session)
+            if talk_show:
+                self._start_talk_fill(talk_show.id)
+            else:
                 logger.warning(
                     "Streaming in %s mode but no talk show or config found",
                     show_type,
                 )
 
-        if show_type == "talk" and talk_show:
-            # Talk show mode — generate talk segments instead of music
-            await self._talk_engine.check_and_fill(session, talk_show)
-        elif show_type == "hybrid" and talk_show:
-            # Hybrid mode — talk segments alongside music (already filled above)
-            await self._talk_engine.check_and_fill(session, talk_show)
+        # Keep the music buffer filled — except during a pure talk show.
+        # When idle (not streaming) tracks are still prefilled so music is
+        # ready the moment streaming starts.
+        if not (self._streaming and show_type == "talk"):
+            await self._buffer_manager.check_and_fill(session, show_id=show_id)
+
+    def _start_talk_fill(self, show_id: int) -> None:
+        """Top up the talk segment buffer in a background task.
+
+        The task opens its own DB session and runs the talk engine's
+        check-and-fill loop until the buffer target is met. Re-entry is
+        cheap: if a fill task is already running this is a no-op, and the
+        engine's own generation flag guards the preview path.
+
+        Args:
+            show_id: The talk-capable show to generate segments for.
+        """
+        if self._talk_fill_task is not None and not self._talk_fill_task.done():
+            return
+
+        async def _fill() -> None:
+            try:
+                factory = get_session_factory()
+                async with factory() as fill_session:
+                    result = await fill_session.execute(
+                        select(Show).where(Show.id == show_id)
+                    )
+                    show = result.scalar_one_or_none()
+                    if show is not None:
+                        await self._talk_engine.check_and_fill(fill_session, show)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Talk buffer fill task failed: %s", exc)
+
+        self._talk_fill_task = asyncio.create_task(_fill(), name="talk_fill")
 
     async def _playout_step(self, session: AsyncSession) -> None:
         """Monitor playout state and queue next items based on show type.
@@ -799,10 +841,7 @@ class MasterScheduler:
             The active Show, or None.
         """
         # Get Station config
-        result = await session.execute(
-            select(Station).order_by(Station.id).limit(1)
-        )
-        station = result.scalar_one_or_none()
+        station = await get_station(session)
         if not station:
             return None
 
@@ -887,10 +926,7 @@ class MasterScheduler:
             session: Async database session.
             active_show: The show computed by :meth:`_get_active_show`.
         """
-        result = await session.execute(
-            select(Station).order_by(Station.id).limit(1)
-        )
-        station = result.scalar_one_or_none()
+        station = await get_station(session)
         if not station or station.broadcast_mode != "scheduled":
             self._force_show_reload = False
             return
@@ -970,12 +1006,10 @@ class MasterScheduler:
         """
         queue_length = await self._playout.get_queue_length()
 
-        if queue_length > 1:
+        if queue_length >= 1:
             return
 
-        await self._queue_next_talk_segment(
-            session, show, fallback_to_dead_air=True
-        )
+        await self._queue_next_talk_segment(session, show)
 
     async def _manage_hybrid_playout(
         self, session: AsyncSession, show: Show
@@ -992,7 +1026,7 @@ class MasterScheduler:
         """
         queue_length = await self._playout.get_queue_length()
 
-        if queue_length > 1:
+        if queue_length >= 1:
             return
 
         result = await session.execute(
@@ -1003,9 +1037,7 @@ class MasterScheduler:
         last_item_type = result.scalar_one_or_none()
 
         if last_item_type == "track":
-            queued_talk = await self._queue_next_talk_segment(
-                session, show, fallback_to_dead_air=False
-            )
+            queued_talk = await self._queue_next_talk_segment(session, show)
             if queued_talk:
                 return
 
@@ -1015,15 +1047,18 @@ class MasterScheduler:
         self,
         session: AsyncSession,
         show: Show,
-        fallback_to_dead_air: bool,
     ) -> bool:
         """Queue the next ready talk segment.
+
+        When no segment is ready the queue is deliberately left empty:
+        Liquidsoap's own fallback playlist covers the gap and — unlike a
+        fallback file pushed into the request queue — it yields the very
+        moment a segment is queued (track_sensitive=false), so talk
+        segments are never stuck behind queued filler audio.
 
         Args:
             session: Async database session.
             show: The active talk-capable show.
-            fallback_to_dead_air: Whether to queue fallback audio when no talk
-                segment is ready.
 
         Returns:
             True if a talk segment was queued, False otherwise.
@@ -1031,9 +1066,11 @@ class MasterScheduler:
         segment = await self._talk_engine.get_next_segment(session, show.id)
 
         if segment is None:
-            # No segments ready — try fallback
-            if fallback_to_dead_air:
-                await self._handle_dead_air(session)
+            event_bus.emit(
+                "buffer.critical",
+                {"ready": 0, "target": settings.TALK_BUFFER_TARGET,
+                 "content": "talk_segments"},
+            )
             return False
 
         if not segment.audio_filepath or not Path(segment.audio_filepath).exists():
@@ -1414,8 +1451,7 @@ class MasterScheduler:
             session: Async database session.
         """
         # Get retention config
-        result = await session.execute(select(Station).limit(1))
-        station = result.scalar_one_or_none()
+        station = await get_station(session)
         retention_days = station.disk_retention_days if station else 30
 
         archive_dir = Path(settings.AUDIO_DIR) / "archive"
@@ -1525,6 +1561,9 @@ class MasterScheduler:
         # them in a transient state with no worker to finish them).
         await self._reap_stuck_generations(session)
 
+        # Remove audio files no DB row references (failed generations)
+        await self._cleanup_orphan_audio(session)
+
         # Clean up old recordings past retention
         await self._cleanup_recordings(session)
 
@@ -1579,14 +1618,57 @@ class MasterScheduler:
             )
             await session.commit()
 
+    async def _cleanup_orphan_audio(self, session: AsyncSession) -> None:
+        """Delete stale audio files in breaks/ and talks/ that no row references.
+
+        Failed or interrupted generations can abandon intermediates
+        (per-line TTS renders, unstitched conversations, stubs of failed
+        segments). Anything older than a day that is not the audio file of
+        a DJBreak or TalkSegment row is deleted.
+
+        Args:
+            session: Async database session.
+        """
+        referenced: set[str] = set()
+        for column in (DJBreak.audio_filepath, TalkSegment.audio_filepath):
+            result = await session.execute(
+                select(column).where(column.isnot(None))
+            )
+            for (filepath,) in result.all():
+                referenced.add(Path(filepath).name)
+
+        cutoff = datetime.now(timezone.utc).timestamp() - 86400
+        purged = 0
+        for subdir in ("breaks", "talks"):
+            directory = Path(settings.AUDIO_DIR) / subdir
+            if not directory.exists():
+                continue
+            for f in directory.iterdir():
+                if not f.is_file() or f.suffix.lower() not in (".wav", ".mp3"):
+                    continue
+                if f.name in referenced:
+                    continue
+                try:
+                    if f.stat().st_mtime >= cutoff:
+                        continue
+                    f.unlink()
+                    purged += 1
+                except OSError:
+                    continue
+
+        if purged:
+            logger.info(
+                "Purged %d orphaned audio files from breaks/ and talks/",
+                purged,
+            )
+
     async def _cleanup_recordings(self, session: AsyncSession) -> None:
         """Delete recording files older than the configured retention period.
 
         Args:
             session: Async database session.
         """
-        result = await session.execute(select(Station).limit(1))
-        station = result.scalar_one_or_none()
+        station = await get_station(session)
         retention_days = station.recording_retention_days if station else 7
 
         recordings_dir = Path(settings.AUDIO_DIR) / "recordings"

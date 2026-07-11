@@ -14,7 +14,7 @@ from fastapi import Depends
 from server.config import settings
 from server.database import get_session
 from server.engine.playout import PlayoutInterface
-from server.models.station import Station
+from server.models.station import Station, get_station
 
 router = APIRouter(prefix="/api/recording", tags=["recording"])
 logger = logging.getLogger(__name__)
@@ -52,8 +52,7 @@ async def get_recording_status(
     Returns:
         Recording enabled state, active status, and disk usage.
     """
-    result = await session.execute(select(Station).order_by(Station.id).limit(1))
-    station = result.scalar_one_or_none()
+    station = await get_station(session)
 
     enabled = station.recording_enabled if station else False
     retention_days = station.recording_retention_days if station else 7
@@ -98,8 +97,7 @@ async def toggle_recording(
         HTTPException: 404 if no station exists, 502 if Liquidsoap does not
             acknowledge the command (the DB state is left unchanged).
     """
-    result = await session.execute(select(Station).order_by(Station.id).limit(1))
-    station = result.scalar_one_or_none()
+    station = await get_station(session)
     if not station:
         raise HTTPException(status_code=404, detail="Station not configured")
 
@@ -144,8 +142,7 @@ async def update_recording_settings(
     Returns:
         Updated settings.
     """
-    result = await session.execute(select(Station).order_by(Station.id).limit(1))
-    station = result.scalar_one_or_none()
+    station = await get_station(session)
     if not station:
         raise HTTPException(status_code=404, detail="Station not configured")
 

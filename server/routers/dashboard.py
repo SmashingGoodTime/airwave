@@ -26,11 +26,12 @@ from server.models.generation_job import GenerationJob
 from server.models.playlog import PlayLog
 from server.models.program_item import ProgramItem
 from server.models.show import Show
-from server.models.station import Station
+from server.models.station import Station, get_station
 from server.models.talk_segment import TalkSegment
 from server.models.track import Track
 from server.providers.registry import ProviderRegistry
 from server.utils.timeutils import to_utc_iso
+from server.engine.timeline_reconciliation import count_unmirrored_ready_source
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -87,13 +88,10 @@ async def get_dashboard_status(
             else "unconfigured"
         ),
         "voice": "configured" if registry.get_voice_provider() else "unconfigured",
-        "telephony": "configured" if registry.get_telephony_provider() else "unconfigured",
-        "conversation": "configured" if registry.get_conversation_provider() else "unconfigured",
     }
 
     # Active show
-    station_result = await session.execute(select(Station).order_by(Station.id).limit(1))
-    station = station_result.scalar_one_or_none()
+    station = await get_station(session)
     active_show = None
     active_show_info = None
     if station and station.current_show_id:
@@ -226,14 +224,14 @@ async def get_timeline_health(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Report consistency diagnostics for timeline mirror data."""
-    unmirrored_tracks = await _count_unmirrored(
-        session, Track, Track.id, "tracks"
+    unmirrored_tracks = await count_unmirrored_ready_source(
+        session, "tracks", Track, Track.id
     )
-    unmirrored_breaks = await _count_unmirrored(
-        session, DJBreak, DJBreak.id, "dj_breaks"
+    unmirrored_breaks = await count_unmirrored_ready_source(
+        session, "dj_breaks", DJBreak, DJBreak.id
     )
-    unmirrored_talk = await _count_unmirrored(
-        session, TalkSegment, TalkSegment.id, "talk_segments"
+    unmirrored_talk = await count_unmirrored_ready_source(
+        session, "talk_segments", TalkSegment, TalkSegment.id
     )
 
     program_items_without_assets = await session.scalar(
@@ -385,26 +383,6 @@ def _count_missing_files(paths: list[str]) -> int:
     return sum(1 for path in paths if not Path(path).exists())
 
 
-async def _count_unmirrored(
-    session: AsyncSession,
-    model,
-    source_id_column,
-    source_table: str,
-) -> int:
-    """Count ready legacy rows without a matching ProgramItem mirror."""
-    count = await session.scalar(
-        select(func.count())
-        .select_from(model)
-        .outerjoin(
-            ProgramItem,
-            (ProgramItem.source_table == source_table)
-            & (ProgramItem.source_id == source_id_column),
-        )
-        .where(model.status == "ready", ProgramItem.id.is_(None))
-    )
-    return count or 0
-
-
 def _issue(code: str, count: int, message: str) -> dict | None:
     """Build an issue summary when a diagnostic count is non-zero."""
     if count <= 0:
@@ -509,8 +487,7 @@ async def _build_status_snapshot(session: AsyncSession, scheduler=None) -> dict:
     )
     buffer_depth = result.scalar() or 0
 
-    station_result = await session.execute(select(Station).order_by(Station.id).limit(1))
-    station = station_result.scalar_one_or_none()
+    station = await get_station(session)
 
     streaming = scheduler.is_streaming if scheduler else False
     streaming_show_type = scheduler.streaming_show_type if scheduler else None

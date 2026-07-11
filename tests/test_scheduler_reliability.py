@@ -53,11 +53,6 @@ class FakePlayout:
         self.queued_breaks.append(filepath)
         return True
 
-    async def update_metadata(self, title: str, artist: str = "AI Radio") -> bool:
-        """Deprecated stub retained for backward-compatibility tests."""
-        self.metadata_updates.append((title, artist))
-        return False
-
     async def get_now_playing_file(self) -> str | None:
         """Return the file the test has marked as currently on air."""
         return self.now_playing_file
@@ -354,11 +349,7 @@ async def test_queue_next_talk_segment_marks_missing_audio_timeline_failed(
 
     scheduler = make_scheduler(FakePlayout())
 
-    queued = await scheduler._queue_next_talk_segment(
-        db_session,
-        show,
-        fallback_to_dead_air=False,
-    )
+    queued = await scheduler._queue_next_talk_segment(db_session, show)
 
     await db_session.refresh(segment)
     await db_session.refresh(item)

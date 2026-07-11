@@ -235,8 +235,6 @@ class TestProviderRegistry:
         assert registry.get_music_provider() is None
         assert registry.get_scriptwriter_provider() is None
         assert registry.get_voice_provider() is None
-        assert registry.get_telephony_provider() is None
-        assert registry.get_conversation_provider() is None
 
     def test_mock_registry_providers(self, mock_registry):
         assert isinstance(mock_registry.get_music_provider(), MusicProvider)
