@@ -94,7 +94,8 @@ ai-radio-dj/
 ├── .env.example
 ├── README.md
 ├── CONTRIBUTING.md
-├── AGENTS.md                      # This file
+├── AGENTS.md                      # This file — guidance for AI coding agents
+├── CLAUDE.md                      # Thin pointer at AGENTS.md, for Claude Code
 ├── LICENSE
 │
 ├── server/
