@@ -120,7 +120,7 @@ This step is **required** — Docker Compose mounts `.env` into the app containe
 
 While you're here, change the `ICECAST_SOURCE_PASSWORD`, `ICECAST_ADMIN_PASSWORD`, and `HARBOR_SOURCE_PASSWORD` values from their `hackme` defaults (see [Security](#13-security)).
 
-### Step 3: Create the data directory and add emergency audio
+### Step 3: Create the data directory
 
 The station stores its database in a `data/` folder on your machine, so your settings survive container upgrades:
 
@@ -128,12 +128,7 @@ The station stores its database in a `data/` folder on your machine, so your set
 mkdir -p data
 ```
 
-Your station also needs at least one audio file to play if the AI music generation is slow or unavailable. Place any MP3 or WAV file in the fallback folder:
-
-```bash
-mkdir -p audio/fallback
-# Copy any music file here — royalty-free background music works well
-```
+Emergency audio is already handled — `audio/fallback/` ships with one track that plays if music generation is ever slow or unavailable, so the station will not go silent on a fresh install. To use your own material instead, drop any MP3 or WAV files into that folder; see [audio/fallback/README.md](audio/fallback/README.md).
 
 ### Step 4: Start your station
 

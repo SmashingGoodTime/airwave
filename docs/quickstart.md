@@ -72,15 +72,11 @@ mkdir -p data
 
 The station's database lives here on your machine, so your settings and play history survive container upgrades.
 
-### Add emergency fallback audio
+### Emergency fallback audio
 
-Your station needs at least one audio file to play in case the AI music generation is slow or unavailable. This prevents silence.
+If AI music generation is ever slow or unavailable, the station plays fallback audio instead of going silent. One track ships in `audio/fallback/`, so this already works on a fresh install — there is nothing to do here.
 
-```bash
-mkdir -p audio/fallback
-```
-
-Copy any MP3 or WAV file into `audio/fallback/`. Royalty-free ambient or background music works well. Even a 30-second loop is fine — it's only used as a safety net.
+To use your own material, copy any MP3 or WAV files into `audio/fallback/`. Royalty-free ambient or background music works well, and even a 30-second loop is fine — it's only a safety net. See [audio/fallback/README.md](../audio/fallback/README.md) for details.
 
 ---
 
