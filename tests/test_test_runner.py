@@ -20,6 +20,12 @@ def _run_test_script(
     if powershell is None:
         pytest.skip("PowerShell is required to exercise scripts/test.ps1")
 
+    # scripts/test.ps1 hard-fails without the vendored dependency directory,
+    # which is gitignored. A fresh clone (or CI) has no .test_deps, so skip
+    # rather than report a failure the contributor cannot act on.
+    if not (repo_root / ".test_deps").is_dir():
+        pytest.skip(".test_deps is required to exercise scripts/test.ps1")
+
     if env is None:
         env = os.environ.copy()
         env.pop("PYTEST_ADDOPTS", None)

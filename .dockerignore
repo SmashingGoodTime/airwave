@@ -4,10 +4,10 @@ __pycache__
 .env
 radio.db
 data/
-audio/tracks/
-audio/breaks/
-audio/archive/
-audio/recordings/
+# The image never COPYs audio/ — it is a runtime volume (see docker-compose.yml).
+# Excluding the whole tree keeps generated tracks and fallback media out of the
+# build context, which otherwise gets uploaded to the daemon on every build.
+audio/
 frontend/node_modules/
 frontend/dist/
 tests/

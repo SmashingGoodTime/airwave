@@ -52,6 +52,10 @@ Thumbs.db
 *.swp
 *.swo
 
+# Per-machine Claude Code settings (permissions allowlist, local paths).
+# .claude/launch.json is intentionally tracked — it is shared dev-server config.
+.claude/settings.local.json
+
 # Local scratch / vendor reference kept on disk but not tracked
 ref225.html
 radio fix notes.txt

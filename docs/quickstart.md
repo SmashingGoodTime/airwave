@@ -52,7 +52,7 @@ Your station uses three AI services. Each one needs an API key — a long string
 ### Download the project
 
 ```bash
-git clone https://github.com/your-org/ai-radio-dj.git
+git clone https://github.com/SmashingGoodTime/ai-radio-dj.git
 cd ai-radio-dj
 ```
 

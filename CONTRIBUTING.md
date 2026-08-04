@@ -16,7 +16,7 @@ Thanks for your interest in contributing! This guide covers everything you need 
 1. **Clone and install Python dependencies:**
 
    ```bash
-   git clone https://github.com/your-org/ai-radio-dj.git
+   git clone https://github.com/SmashingGoodTime/ai-radio-dj.git
    cd ai-radio-dj
    pip install -r requirements.txt
    ```

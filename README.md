@@ -106,7 +106,7 @@ Each service has a free tier you can start with. You'll need an **API key** from
 ### Step 1: Download the project
 
 ```bash
-git clone https://github.com/your-org/ai-radio-dj.git
+git clone https://github.com/SmashingGoodTime/ai-radio-dj.git
 cd ai-radio-dj
 ```
 
