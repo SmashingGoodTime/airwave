@@ -1,15 +1,23 @@
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-sqlalchemy[asyncio]>=2.0.23
-aiosqlite>=0.19.0
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
-alembic>=1.13.0
-python-dotenv>=1.0.0
-tzdata>=2024.1
-python-multipart>=0.0.6
-httpx>=0.25.0
+# Runtime dependencies.
+#
+# Test and development tooling lives in requirements-dev.txt, so the Docker
+# image and production installs stay free of test packages.
+#
+# Upper bounds guard against breaking changes in new major versions. Raise
+# them deliberately, after running the test suite against the new release.
 
-# Test dependencies
-pytest>=7.4.0
-pytest-asyncio>=0.23.0
+fastapi>=0.115.6,<1.0
+uvicorn[standard]>=0.34.0,<1.0
+sqlalchemy[asyncio]>=2.0.48,<3.0
+aiosqlite>=0.22.1,<1.0
+pydantic>=2.10.4,<3.0
+pydantic-settings>=2.13.1,<3.0
+alembic>=1.18.4,<2.0
+python-dotenv>=1.0.1,<2.0
+python-multipart>=0.0.22,<1.0
+httpx>=0.28.1,<1.0
+
+# Timezone database. Pure data, so no upper bound -- newer releases only add
+# or correct zone definitions. Required because Windows has no system tzdata
+# and the station's scheduling is timezone-aware.
+tzdata>=2025.2

@@ -1,0 +1,11 @@
+# Development and test dependencies.
+#
+#   pip install -r requirements-dev.txt
+#
+# Pulls in the runtime dependencies as well, so this is the only install a
+# contributor needs.
+
+-r requirements.txt
+
+pytest>=8.4.2,<9.0
+pytest-asyncio>=1.3.0,<2.0

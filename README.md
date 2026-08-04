@@ -313,6 +313,8 @@ python -m server.main
 
 The API starts at http://localhost:8000.
 
+To also run the test suite, install `requirements-dev.txt` instead — it adds the test tooling on top of the runtime dependencies. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ### Frontend (React)
 
 ```bash

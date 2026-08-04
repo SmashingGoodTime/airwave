@@ -18,8 +18,11 @@ Thanks for your interest in contributing! This guide covers everything you need 
    ```bash
    git clone https://github.com/SmashingGoodTime/ai-radio-dj.git
    cd ai-radio-dj
-   pip install -r requirements.txt
+   pip install -r requirements-dev.txt
    ```
+
+   `requirements-dev.txt` pulls in the runtime dependencies plus the test
+   tooling. Use `requirements.txt` alone only for a non-development install.
 
 2. **Set up environment variables:**
 
@@ -181,7 +184,7 @@ Always maintain fallback audio. Buffer alerts must surface before dead air is po
 
 ```bash
 # Install the same dependencies CI expects
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 
 # Run all tests
 python -m pytest
