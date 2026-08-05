@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from server.database import Base
@@ -20,13 +20,9 @@ class Show(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
-    show_type: Mapped[str] = mapped_column(String, default="music")  # music, talk, hybrid
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     duration_minutes: Mapped[int] = mapped_column(Integer, default=30)
     queue_order: Mapped[int] = mapped_column(Integer, default=0)
-    talk_config_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("talk_show_configs.id", ondelete="SET NULL"), nullable=True
-    )
     dj_config_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("dj_configs.id", ondelete="SET NULL"), nullable=True
     )

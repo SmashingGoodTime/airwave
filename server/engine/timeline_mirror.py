@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.models.audio_asset import AudioAsset
 from server.models.dj_break import DJBreak
 from server.models.program_item import ProgramItem
-from server.models.talk_segment import TalkSegment
 from server.models.track import Track
 
 
@@ -41,24 +40,6 @@ async def mirror_dj_break_ready(
         loudness_lufs=None,
         provider=None,
         metadata_json=dj_break.context,
-    )
-
-
-async def mirror_talk_segment_ready(
-    session: AsyncSession, segment: TalkSegment
-) -> ProgramItem:
-    """Mirror a ready talk segment into audio asset and timeline records."""
-    return await _mirror_ready_item(
-        session=session,
-        source_table="talk_segments",
-        source_id=segment.id,
-        item_type="talk_segment",
-        title=segment.segment_type,
-        filepath=segment.audio_filepath,
-        duration=segment.duration,
-        loudness_lufs=segment.loudness_lufs,
-        provider=None,
-        metadata_json=segment.context,
     )
 
 

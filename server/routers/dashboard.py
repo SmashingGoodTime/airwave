@@ -27,7 +27,6 @@ from server.models.playlog import PlayLog
 from server.models.program_item import ProgramItem
 from server.models.show import Show
 from server.models.station import Station, get_station
-from server.models.talk_segment import TalkSegment
 from server.models.track import Track
 from server.providers.registry import ProviderRegistry
 from server.utils.timeutils import to_utc_iso
@@ -103,19 +102,7 @@ async def get_dashboard_status(
             active_show_info = {
                 "id": active_show.id,
                 "name": active_show.name,
-                "show_type": active_show.show_type,
             }
-
-    # Talk segment buffer (when in talk mode)
-    talk_buffer_depth = 0
-    if active_show and active_show.show_type in ("talk", "hybrid"):
-        ts_result = await session.execute(
-            select(func.count(TalkSegment.id)).where(
-                TalkSegment.status == "ready",
-                TalkSegment.show_id == active_show.id,
-            )
-        )
-        talk_buffer_depth = ts_result.scalar() or 0
 
     # Active calls (removed CallSession)
     active_calls = 0
@@ -123,7 +110,6 @@ async def get_dashboard_status(
     # Streaming state
     scheduler = getattr(request.app.state, "scheduler", None)
     streaming = scheduler.is_streaming if scheduler else False
-    streaming_show_type = scheduler.streaming_show_type if scheduler else None
     stream_status = "online" if streaming or now_playing else "idle"
 
     return {
@@ -134,10 +120,8 @@ async def get_dashboard_status(
         "provider_health": provider_health,
         "stream_status": stream_status,
         "active_show": active_show_info,
-        "talk_buffer_depth": talk_buffer_depth,
         "active_calls": active_calls,
         "streaming": streaming,
-        "streaming_show_type": streaming_show_type,
     }
 
 
@@ -230,9 +214,6 @@ async def get_timeline_health(
     unmirrored_breaks = await count_unmirrored_ready_source(
         session, "dj_breaks", DJBreak, DJBreak.id
     )
-    unmirrored_talk = await count_unmirrored_ready_source(
-        session, "talk_segments", TalkSegment, TalkSegment.id
-    )
 
     program_items_without_assets = await session.scalar(
         select(func.count(ProgramItem.id)).where(
@@ -266,7 +247,6 @@ async def get_timeline_health(
     summary = {
         "unmirrored_ready_tracks": unmirrored_tracks,
         "unmirrored_ready_breaks": unmirrored_breaks,
-        "unmirrored_ready_talk_segments": unmirrored_talk,
         "program_items_without_assets": program_items_without_assets,
         "ready_assets_missing_files": ready_assets_missing_files,
         "recent_failed_jobs": recent_failed_jobs,
@@ -275,11 +255,6 @@ async def get_timeline_health(
     issues = [
         _issue("unmirrored_ready_tracks", unmirrored_tracks, "ready tracks are not mirrored"),
         _issue("unmirrored_ready_breaks", unmirrored_breaks, "ready DJ breaks are not mirrored"),
-        _issue(
-            "unmirrored_ready_talk_segments",
-            unmirrored_talk,
-            "ready talk segments are not mirrored",
-        ),
         _issue(
             "program_items_without_assets",
             program_items_without_assets,
@@ -490,7 +465,6 @@ async def _build_status_snapshot(session: AsyncSession, scheduler=None) -> dict:
     station = await get_station(session)
 
     streaming = scheduler.is_streaming if scheduler else False
-    streaming_show_type = scheduler.streaming_show_type if scheduler else None
     stream_status = "online" if streaming or now_playing else "idle"
 
     return {
@@ -500,7 +474,6 @@ async def _build_status_snapshot(session: AsyncSession, scheduler=None) -> dict:
         "buffer_warning": station.buffer_warning_threshold if station else 2,
         "stream_status": stream_status,
         "streaming": streaming,
-        "streaming_show_type": streaming_show_type,
     }
 
 

@@ -7,13 +7,11 @@ import pytest
 
 from server.engine.timeline_mirror import (
     mirror_dj_break_ready,
-    mirror_talk_segment_ready,
     mirror_track_ready,
 )
 from server.models.audio_asset import AudioAsset
 from server.models.dj_break import DJBreak
 from server.models.program_item import ProgramItem
-from server.models.talk_segment import TalkSegment
 from server.models.track import Track
 
 
@@ -102,33 +100,3 @@ async def test_mirror_dj_break_ready_creates_speech_asset(db_session: AsyncSessi
     assert item.source_id == dj_break.id
     assert item.duration == 15.0
     assert item.metadata_json == dj_break.context
-
-
-@pytest.mark.asyncio
-async def test_mirror_talk_segment_ready_creates_talk_asset(db_session: AsyncSession):
-    segment = TalkSegment(
-        audio_filepath="audio/talks/segment.wav",
-        segment_type="conversation",
-        script_text="A conversation",
-        duration=60.0,
-        loudness_lufs=-13.8,
-        status="ready",
-        context='{"topic": "AI"}',
-    )
-    db_session.add(segment)
-    await db_session.commit()
-    await db_session.refresh(segment)
-
-    item = await mirror_talk_segment_ready(db_session, segment)
-    await db_session.commit()
-    await db_session.refresh(item)
-
-    asset = await db_session.get(AudioAsset, item.audio_asset_id)
-    assert asset is not None
-    assert asset.asset_type == "talk_segment"
-    assert asset.normalized_filepath == "audio/talks/segment.wav"
-    assert asset.loudness_lufs == -13.8
-    assert item.item_type == "talk_segment"
-    assert item.source_table == "talk_segments"
-    assert item.source_id == segment.id
-    assert item.title == "conversation"

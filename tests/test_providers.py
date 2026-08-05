@@ -70,71 +70,8 @@ class TestMockScriptWriterProvider:
         assert await mock_scriptwriter_provider.check_status() is True
 
     @pytest.mark.asyncio
-    async def test_write_talk_segment_not_implemented(self, mock_scriptwriter_provider):
-        with pytest.raises(NotImplementedError):
-            await mock_scriptwriter_provider.write_talk_segment({})
-
-    @pytest.mark.asyncio
     async def test_is_instance_of_base(self, mock_scriptwriter_provider):
         assert isinstance(mock_scriptwriter_provider, ScriptWriterProvider)
-
-
-class TestGeminiScriptWriterProvider:
-    @pytest.mark.asyncio
-    async def test_write_talk_segment_returns_conversation_json(self):
-        """Gemini should implement the talk-show contract, not inherit the stub."""
-
-        class FakeResponse:
-            status_code = 200
-
-            def raise_for_status(self):
-                return None
-
-            def json(self):
-                return {
-                    "candidates": [
-                        {
-                            "finishReason": "STOP",
-                            "content": {
-                                "parts": [
-                                    {
-                                        "text": (
-                                            '[{"speaker":"Host","text":"Welcome back.",'
-                                            '"pace":"normal"},'
-                                            '{"speaker":"Riley","text":"This is the good part.",'
-                                            '"pace":"quick"}]'
-                                        )
-                                    }
-                                ]
-                            },
-                        }
-                    ]
-                }
-
-        class FakeClient:
-            async def post(self, url, json):
-                return FakeResponse()
-
-        provider = GeminiScriptWriterProvider(api_key="test-key")
-        provider._get_client = lambda: FakeClient()
-
-        result = await provider.write_talk_segment(
-            {
-                "topic": {"title": "Local arts", "prompt": "Discuss local arts."},
-                "segment_type": "conversation",
-                "speakers": [
-                    {"name": "Host", "personality_prompt": "Curious host"},
-                    {"name": "Riley", "personality_prompt": "Dry co-host"},
-                ],
-                "show_name": "Morning Talk",
-                "target_duration": 120,
-            }
-        )
-
-        assert result["segment_type"] == "conversation"
-        assert result["speakers"] == ["Host", "Riley"]
-        assert result["estimated_duration"] > 0
-        assert result["script_text"].startswith("[")
 
 
 class TestMockVoiceProvider:

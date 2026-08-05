@@ -15,7 +15,6 @@ from server.models.playlog import PlayLog
 from server.models.program_item import ProgramItem
 from server.models.show import Show
 from server.models.station import Station
-from server.models.talk_segment import TalkSegment
 from server.models.track import Track
 
 
@@ -321,45 +320,6 @@ async def test_queue_next_track_marks_missing_audio_timeline_failed(
 
 
 @pytest.mark.asyncio
-async def test_queue_next_talk_segment_marks_missing_audio_timeline_failed(
-    db_session, monkeypatch, tmp_path, engine
-):
-    """Missing talk audio should fail the matching timeline item."""
-    patch_scheduler_session_factory(monkeypatch, engine)
-    missing_file = runtime_path(tmp_path, "missing-talk.wav")
-    show = Show(id=1, name="Talk", show_type="talk", talk_config_id=1)
-    segment = TalkSegment(
-        show_id=1,
-        talk_config_id=1,
-        segment_type="conversation",
-        audio_filepath=str(missing_file),
-        duration=60.0,
-        status="ready",
-    )
-    db_session.add_all([show, segment])
-    await db_session.flush()
-    item = ProgramItem(
-        item_type="talk_segment",
-        status="ready",
-        source_table="talk_segments",
-        source_id=segment.id,
-    )
-    db_session.add(item)
-    await db_session.commit()
-
-    scheduler = make_scheduler(FakePlayout())
-
-    queued = await scheduler._queue_next_talk_segment(db_session, show)
-
-    await db_session.refresh(segment)
-    await db_session.refresh(item)
-    assert queued is False
-    assert segment.status == "failed"
-    assert item.status == "failed"
-    assert item.ended_at is not None
-
-
-@pytest.mark.asyncio
 async def test_queue_next_track_continues_when_timeline_failed_update_fails(
     db_session, monkeypatch, tmp_path, engine
 ):
@@ -444,183 +404,6 @@ async def test_empty_buffer_queues_fallback_audio(db_session, monkeypatch, tmp_p
 
     assert fake_playout.queued_tracks == [str(fallback_file)]
     assert ("buffer.critical", {"ready": 0, "target": 0}) in events
-
-
-@pytest.mark.asyncio
-async def test_manage_talk_playout_marks_previous_segment_played(db_session, tmp_path):
-    """Air-time reconcile should close a stale playing talk segment."""
-    prev_file = runtime_path(tmp_path, "talk-prev.wav")
-    prev_file.write_bytes(b"fake wav")
-    previous = TalkSegment(
-        segment_type="conversation",
-        audio_filepath=str(prev_file),
-        status="playing",
-    )
-    audio_file = runtime_path(tmp_path, "talk.wav")
-    audio_file.write_bytes(b"fake wav")
-    next_segment = TalkSegment(
-        show_id=1,
-        talk_config_id=1,
-        segment_type="conversation",
-        audio_filepath=str(audio_file),
-        duration=60.0,
-        status="ready",
-    )
-    show = Show(
-        id=1,
-        name="Morning Talk",
-        show_type="talk",
-        talk_config_id=1,
-    )
-    db_session.add_all([previous, next_segment, show])
-    await db_session.commit()
-
-    fake_playout = FakePlayout()
-    scheduler = make_scheduler(fake_playout)
-    scheduler._on_air_path = str(prev_file)
-
-    await scheduler._manage_talk_playout(db_session, show)
-    await db_session.refresh(next_segment)
-    assert next_segment.status == "queued"
-    assert fake_playout.queued_tracks == [str(audio_file)]
-
-    await air(scheduler, db_session, audio_file)
-    await db_session.refresh(previous)
-    await db_session.refresh(next_segment)
-    assert previous.status == "played"
-    assert next_segment.status == "playing"
-
-
-@pytest.mark.asyncio
-async def test_manage_talk_playout_updates_timeline_lifecycle(
-    db_session, monkeypatch, tmp_path, engine
-):
-    """Air-time reconcile should mirror talk state into ProgramItem rows."""
-    patch_scheduler_session_factory(monkeypatch, engine)
-    prev_file = runtime_path(tmp_path, "timeline-talk-prev.wav")
-    prev_file.write_bytes(b"fake wav")
-    previous = TalkSegment(
-        segment_type="conversation",
-        audio_filepath=str(prev_file),
-        status="playing",
-    )
-    audio_file = runtime_path(tmp_path, "timeline-talk.wav")
-    audio_file.write_bytes(b"fake wav")
-    next_segment = TalkSegment(
-        show_id=1,
-        talk_config_id=1,
-        segment_type="conversation",
-        audio_filepath=str(audio_file),
-        duration=60.0,
-        status="ready",
-    )
-    show = Show(
-        id=1,
-        name="Morning Talk",
-        show_type="talk",
-        talk_config_id=1,
-    )
-    db_session.add_all([previous, next_segment, show])
-    await db_session.flush()
-    previous_item = ProgramItem(
-        item_type="talk_segment",
-        status="playing",
-        source_table="talk_segments",
-        source_id=previous.id,
-    )
-    next_item = ProgramItem(
-        item_type="talk_segment",
-        status="ready",
-        source_table="talk_segments",
-        source_id=next_segment.id,
-    )
-    db_session.add_all([previous_item, next_item])
-    await db_session.commit()
-
-    scheduler = make_scheduler(FakePlayout())
-    scheduler._on_air_path = str(prev_file)
-
-    await scheduler._manage_talk_playout(db_session, show)
-    await air(scheduler, db_session, audio_file)
-
-    await db_session.refresh(previous_item)
-    await db_session.refresh(next_item)
-    assert previous_item.status == "played"
-    assert previous_item.ended_at is not None
-    assert next_item.status == "playing"
-    assert next_item.queued_at is not None
-    assert next_item.started_at is not None
-
-
-@pytest.mark.asyncio
-async def test_hybrid_playout_queues_talk_after_music(db_session, tmp_path):
-    """Hybrid shows should alternate into ready talk segments after music."""
-    talk_file = runtime_path(tmp_path, "hybrid_talk.wav")
-    talk_file.write_bytes(b"fake wav")
-    show = Show(
-        id=1,
-        name="Hybrid Hour",
-        show_type="hybrid",
-        talk_config_id=1,
-    )
-    segment = TalkSegment(
-        show_id=1,
-        talk_config_id=1,
-        segment_type="conversation",
-        audio_filepath=str(talk_file),
-        duration=45.0,
-        status="ready",
-    )
-    db_session.add_all(
-        [
-            show,
-            segment,
-            PlayLog(item_type="track", item_id=99, duration=180.0),
-        ]
-    )
-    await db_session.commit()
-
-    fake_playout = FakePlayout(queue_length=0)
-    scheduler = make_scheduler(fake_playout)
-    scheduler._streaming = True
-    scheduler._get_active_show = AsyncMock(return_value=show)
-    scheduler._manage_playout = AsyncMock()
-
-    await scheduler._playout_step(db_session)
-
-    await db_session.refresh(segment)
-    assert segment.status == "queued"
-    assert fake_playout.queued_tracks == [str(talk_file)]
-    scheduler._manage_playout.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_hybrid_playout_queues_music_after_talk(db_session):
-    """Hybrid shows should return to music after a talk segment."""
-    show = Show(
-        id=1,
-        name="Hybrid Hour",
-        show_type="hybrid",
-        talk_config_id=1,
-    )
-    db_session.add_all(
-        [
-            show,
-            PlayLog(item_type="talk_segment", item_id=42, duration=45.0),
-        ]
-    )
-    await db_session.commit()
-
-    fake_playout = FakePlayout(queue_length=0)
-    scheduler = make_scheduler(fake_playout)
-    scheduler._streaming = True
-    scheduler._get_active_show = AsyncMock(return_value=show)
-    scheduler._manage_playout = AsyncMock()
-
-    await scheduler._playout_step(db_session)
-
-    scheduler._manage_playout.assert_awaited_once()
-    assert fake_playout.queued_tracks == []
 
 
 @pytest.mark.asyncio
@@ -814,7 +597,6 @@ async def test_start_streaming_marks_active_show_seen_to_avoid_duplicate_intro(
     patch_scheduler_session_factory(monkeypatch, engine)
     show = Show(
         name="Evening Block",
-        show_type="music",
         active=True,
     )
     db_session.add(show)
@@ -836,7 +618,6 @@ async def test_start_streaming_marks_active_show_seen_to_avoid_duplicate_intro(
     await scheduler._show_transition_step(db_session)
 
     assert scheduler._current_show_id == show.id
-    assert scheduler._current_show_type == "music"
     scheduler._dj_brain.generate_show_intro.assert_not_awaited()
 
 

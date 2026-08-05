@@ -31,7 +31,6 @@ from server.routers import (
     stream,
     streaming,
     styles,
-    talk_shows,
 )
 
 # Configure structured logging
@@ -170,7 +169,6 @@ app.include_router(dashboard.router)
 app.include_router(playlog.router)
 app.include_router(stream.router)
 app.include_router(shows.router)
-app.include_router(talk_shows.router)
 app.include_router(recording.router)
 app.include_router(providers.router)
 app.include_router(streaming.router)

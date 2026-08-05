@@ -7,8 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.engine.timeline_reconciliation import build_timeline_reconciliation
 from server.models.program_item import ProgramItem
-from server.models.show import Show
-from server.models.talk_segment import TalkSegment
 from server.models.track import Track
 
 
@@ -215,58 +213,3 @@ async def test_reconciliation_reports_source_readiness_drift(
         "legacy_ready_missing_timeline",
         "timeline_ready_source_not_ready",
     }.issubset({issue["code"] for issue in result["issues"]})
-
-
-@pytest.mark.asyncio
-async def test_reconciliation_reports_talk_candidate_mismatch_per_show(
-    db_session: AsyncSession,
-):
-    show = Show(name="Morning Talk", show_type="talk")
-    db_session.add(show)
-    await db_session.flush()
-    first = TalkSegment(
-        show_id=show.id,
-        segment_type="monologue",
-        audio_filepath="audio/talks/first.wav",
-        status="ready",
-        created_at=_dt(1),
-    )
-    second = TalkSegment(
-        show_id=show.id,
-        segment_type="monologue",
-        audio_filepath="audio/talks/second.wav",
-        status="ready",
-        created_at=_dt(2),
-    )
-    db_session.add_all([first, second])
-    await db_session.flush()
-    db_session.add_all(
-        [
-            ProgramItem(
-                item_type="talk_segment",
-                status="ready",
-                source_table="talk_segments",
-                source_id=second.id,
-                title="monologue",
-                created_at=_dt(1),
-            ),
-            ProgramItem(
-                item_type="talk_segment",
-                status="ready",
-                source_table="talk_segments",
-                source_id=first.id,
-                title="monologue",
-                created_at=_dt(3),
-            ),
-        ]
-    )
-    await db_session.commit()
-
-    result = await build_timeline_reconciliation(db_session)
-
-    assert result["summary"]["talk_candidate_mismatch"] == 1
-    comparison = next(c for c in result["comparisons"] if c["queue"] == "talk")
-    assert comparison["show_id"] == show.id
-    assert comparison["aligned"] is False
-    assert comparison["legacy_source"]["source_id"] == first.id
-    assert comparison["timeline_source"]["source_id"] == second.id

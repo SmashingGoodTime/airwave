@@ -13,7 +13,6 @@ import {
   fetchStreamUrl,
   fetchShows,
   fetchDJConfigs,
-  fetchTalkConfigs,
   fetchStyles,
   fetchStreamingStatus,
   createShow,
@@ -58,13 +57,11 @@ function Dashboard() {
   const [error, setError] = useState(null)
   const [wsConnected, setWsConnected] = useState(false)
   const [streaming, setStreaming] = useState(false)
-  const [streamingShowType, setStreamingShowType] = useState(null)
   const [streamingAction, setStreamingAction] = useState(false)
   const [streamUrl, setStreamUrl] = useState(null)
 
   const [shows, setShows] = useState([])
   const [djConfigs, setDJConfigs] = useState([])
-  const [talkConfigs, setTalkConfigs] = useState([])
   const [styles, setStyles] = useState([])
   const [broadcastMode, setBroadcastMode] = useState('manual')
   const [currentShowId, setCurrentShowId] = useState(null)
@@ -74,9 +71,7 @@ function Dashboard() {
   const [timeLeft, setTimeLeft] = useState(null)
 
   const [selectedDjConfigId, setSelectedDjConfigId] = useState('')
-  const [selectedShowType, setSelectedShowType] = useState('music')
   const [selectedStyleIds, setSelectedStyleIds] = useState([])
-  const [selectedTalkConfigId, setSelectedTalkConfigId] = useState('')
   const [selectedPresetShowId, setSelectedPresetShowId] = useState('')
 
   const wsRef = useRef(null)
@@ -104,7 +99,6 @@ function Dashboard() {
         recData,
         showsData,
         djsData,
-        talkData,
         stylesData,
         streamStatusData
       ] = await Promise.allSettled([
@@ -117,7 +111,6 @@ function Dashboard() {
         fetchRecordingStatus(),
         fetchShows(),
         fetchDJConfigs(),
-        fetchTalkConfigs(),
         fetchStyles(),
         fetchStreamingStatus()
       ])
@@ -133,13 +126,11 @@ function Dashboard() {
       if (recData.status === 'fulfilled') setRecordingStatus(recData.value)
       if (showsData.status === 'fulfilled') setShows(loadedShows)
       if (djsData.status === 'fulfilled') setDJConfigs(djsData.value)
-      if (talkData.status === 'fulfilled') setTalkConfigs(talkData.value)
       if (stylesData.status === 'fulfilled') setStyles(stylesData.value)
 
       if (streamStatusData.status === 'fulfilled') {
         const streamData = streamStatusData.value
         setStreaming(streamData.streaming)
-        setStreamingShowType(streamData.show_type)
         setBroadcastMode(streamData.broadcast_mode || 'manual')
         setCurrentShowId(streamData.current_show_id)
         setActiveShowName(streamData.active_show_name)
@@ -150,9 +141,7 @@ function Dashboard() {
           const currentShowObj = loadedShows.find(s => s.id === streamData.current_show_id)
           if (currentShowObj) {
             setSelectedDjConfigId(currentShowObj.dj_config_id || '')
-            setSelectedShowType(currentShowObj.show_type)
             setSelectedStyleIds(currentShowObj.style_ids || [])
-            setSelectedTalkConfigId(currentShowObj.talk_config_id || '')
           }
         }
       }
@@ -202,20 +191,17 @@ function Dashboard() {
             setStatus(prev => ({ ...prev, ...msg.data }))
             if (msg.data.streaming !== undefined) {
               setStreaming(msg.data.streaming)
-              setStreamingShowType(msg.data.streaming_show_type ?? null)
             }
           } else if (msg.type === 'stream.started' && msg.data) {
             setStreaming(true)
-            setStreamingShowType(msg.data.show_type ?? null)
             loadDataRef.current()
           } else if (msg.type === 'stream.stopped') {
             setStreaming(false)
-            setStreamingShowType(null)
             setBroadcastMode('manual')
             setCurrentShowId(null)
             setActiveShowName(null)
             setCurrentShowStartedAt(null)
-          } else if (msg.type === 'stream.mode_changed' || msg.type === 'show.started') {
+          } else if (msg.type === 'show.started') {
             loadDataRef.current()
           } else if (msg.type === 'track.started' && msg.data) {
             setStatus(prev => ({ ...prev, now_playing: msg.data }))
@@ -309,9 +295,7 @@ function Dashboard() {
       let liveShow = shows.find(s => s.name === 'Live Broadcast')
       const showData = {
         name: 'Live Broadcast',
-        show_type: selectedShowType,
         dj_config_id: selectedDjConfigId ? parseInt(selectedDjConfigId) : null,
-        talk_config_id: selectedTalkConfigId ? parseInt(selectedTalkConfigId) : null,
         style_ids: selectedStyleIds,
         active: true,
         duration_minutes: 60,
@@ -332,7 +316,6 @@ function Dashboard() {
       setBroadcastMode('manual')
       setCurrentShowId(showId)
       setActiveShowName('Live Broadcast')
-      setStreamingShowType(selectedShowType)
       setError(null)
       loadData()
     } catch (err) {
@@ -353,7 +336,6 @@ function Dashboard() {
       setBroadcastMode('manual')
       setCurrentShowId(showId)
       setActiveShowName(selectedShow?.name || 'Live Broadcast')
-      setStreamingShowType(selectedShow?.show_type || 'music')
       setError(null)
       loadData()
     } catch (err) {
@@ -443,7 +425,7 @@ function Dashboard() {
   const bufferTarget = status?.buffer_target ?? 3
   const bufferWarning = status?.buffer_warning ?? 2
   const streamModeLabel = broadcastMode === 'scheduled' ? 'Scheduled' : 'Manual'
-  const currentShowLabel = activeShowName || (streaming ? `${streamingShowType || 'music'} stream` : 'Not broadcasting')
+  const currentShowLabel = activeShowName || (streaming ? 'Live stream' : 'Not broadcasting')
   const hasAttention = timelineIssues.length > 0 || failedJobs.length > 0 || bufferDepth <= bufferWarning
 
   if (loading) {
@@ -494,7 +476,6 @@ function Dashboard() {
             {currentShowLabel}
           </div>
           <div style={{ ...mutedText, marginTop: 8, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <span>{streamingShowType || selectedShowType}</span>
             {broadcastMode === 'scheduled' && timeLeft && <span>{timeLeft} left</span>}
             {recordingStatus?.active && <span>{recordingStatus.disk_usage_mb} MB recorded</span>}
           </div>
@@ -578,16 +559,6 @@ function Dashboard() {
             </div>
 
             <div style={{ display: 'grid', gap: 12 }}>
-              <SegmentedControl
-                value={selectedShowType}
-                options={[
-                  ['music', 'Music'],
-                  ['talk', 'Talk'],
-                  ['hybrid', 'Hybrid'],
-                ]}
-                onChange={setSelectedShowType}
-              />
-
               <label style={{ display: 'grid', gap: 6 }}>
                 <span style={mutedText}>DJ</span>
                 <select value={selectedDjConfigId} onChange={e => setSelectedDjConfigId(e.target.value)} style={compactInput}>
@@ -600,43 +571,27 @@ function Dashboard() {
                 </select>
               </label>
 
-              {(selectedShowType === 'music' || selectedShowType === 'hybrid') && (
-                <div>
-                  <div style={{ ...mutedText, marginBottom: 6 }}>Styles</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {styles.length === 0 ? (
-                      <span style={mutedText}>No active styles</span>
-                    ) : styles.map(style => {
-                      const isSelected = selectedStyleIds.includes(style.id)
-                      return (
-                        <button
-                          key={style.id}
-                          type="button"
-                          onClick={() => handleStyleToggle(style.id)}
-                          className={`btn btn-sm ${isSelected ? 'btn-primary' : 'btn-secondary'}`}
-                          style={{ fontSize: '0.75rem' }}
-                        >
-                          {style.name}
-                        </button>
-                      )
-                    })}
-                  </div>
+              <div>
+                <div style={{ ...mutedText, marginBottom: 6 }}>Styles</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {styles.length === 0 ? (
+                    <span style={mutedText}>No active styles</span>
+                  ) : styles.map(style => {
+                    const isSelected = selectedStyleIds.includes(style.id)
+                    return (
+                      <button
+                        key={style.id}
+                        type="button"
+                        onClick={() => handleStyleToggle(style.id)}
+                        className={`btn btn-sm ${isSelected ? 'btn-primary' : 'btn-secondary'}`}
+                        style={{ fontSize: '0.75rem' }}
+                      >
+                        {style.name}
+                      </button>
+                    )
+                  })}
                 </div>
-              )}
-
-              {(selectedShowType === 'talk' || selectedShowType === 'hybrid') && (
-                <label style={{ display: 'grid', gap: 6 }}>
-                  <span style={mutedText}>Talk Config</span>
-                  <select value={selectedTalkConfigId} onChange={e => setSelectedTalkConfigId(e.target.value)} style={compactInput}>
-                    <option value="">Select config</option>
-                    {talkConfigs.map(config => (
-                      <option key={config.id} value={config.id}>
-                        {config.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
+              </div>
 
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button className="btn btn-primary" onClick={handleGoLive} disabled={streamingAction}>
@@ -687,8 +642,7 @@ function Dashboard() {
                       <div style={{ color: '#f5f7fb', fontWeight: 700, fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {block.name}
                       </div>
-                      <div style={{ ...mutedText, display: 'flex', justifyContent: 'space-between', marginTop: 5 }}>
-                        <span>{block.show_type}</span>
+                      <div style={{ ...mutedText, display: 'flex', justifyContent: 'flex-end', marginTop: 5 }}>
                         <span>{block.duration_minutes}m</span>
                       </div>
                     </div>
@@ -771,23 +725,6 @@ function StatusPill({ tone, label }) {
       <span style={{ width: 7, height: 7, borderRadius: '50%', background: fg }} />
       {label}
     </span>
-  )
-}
-
-function SegmentedControl({ value, options, onChange }) {
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${options.length}, 1fr)`, gap: 6 }}>
-      {options.map(([optionValue, label]) => (
-        <button
-          key={optionValue}
-          type="button"
-          className={`btn btn-sm ${value === optionValue ? 'btn-primary' : 'btn-secondary'}`}
-          onClick={() => onChange(optionValue)}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
   )
 }
 

@@ -8,7 +8,6 @@ import DJConfig from './pages/DJConfig'
 import Announcements from './pages/Announcements'
 import PlayLog from './pages/PlayLog'
 import Shows from './pages/Shows'
-import TalkShowConfig from './pages/TalkShowConfig'
 import Recordings from './pages/Recordings'
 import Providers from './pages/Providers'
 import Visualizer from './pages/Visualizer'
@@ -157,10 +156,6 @@ function App() {
                 <span className="nav-icon">&#128197;</span>
                 Shows
               </NavLink>
-              <NavLink to="/talk-shows" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-                <span className="nav-icon">&#127908;</span>
-                Talk Shows
-              </NavLink>
               <NavLink to="/recordings" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
                 <span className="nav-icon">&#128308;</span>
                 Recordings
@@ -191,7 +186,6 @@ function App() {
               <Route path="/announcements" element={<Announcements />} />
               <Route path="/playlog" element={<PlayLog />} />
               <Route path="/shows" element={<Shows />} />
-              <Route path="/talk-shows" element={<TalkShowConfig />} />
               <Route path="/recordings" element={<Recordings />} />
               <Route path="/providers" element={<Providers />} />
               <Route path="/" element={<Navigate to="/dashboard" replace />} />

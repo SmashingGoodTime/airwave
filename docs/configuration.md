@@ -13,12 +13,11 @@ Every setting in AI Radio DJ, explained. Most settings have sensible defaults an
 5. [Music Styles (Web UI)](#5-music-styles-web-ui)
 6. [Announcements (Web UI)](#6-announcements-web-ui)
 7. [Show Schedule (Web UI)](#7-show-schedule-web-ui)
-8. [Talk Show Configuration (Web UI)](#8-talk-show-configuration-web-ui)
-9. [Call-in Configuration (Roadmap)](#9-call-in-configuration-roadmap)
-10. [Audio Standards](#10-audio-standards)
-11. [Rate Limits](#11-rate-limits)
-12. [Background Loops](#12-background-loops)
-13. [Docker & Infrastructure](#13-docker--infrastructure)
+8. [Call-in Configuration (Roadmap)](#8-call-in-configuration-roadmap)
+9. [Audio Standards](#9-audio-standards)
+10. [Rate Limits](#10-rate-limits)
+11. [Background Loops](#11-background-loops)
+12. [Docker & Infrastructure](#12-docker--infrastructure)
 
 ---
 
@@ -54,7 +53,7 @@ These are set in the `.env` file at the project root. Changes require restarting
 | Variable | Default | What It Does |
 |----------|---------|-------------|
 | `SUNO_API_KEY` | *(empty)* | Key for Suno music generation. Without this, no music is created. |
-| `GOOGLE_API_KEY` | *(empty)* | Key for Google Gemini script writing. Without this, no DJ scripts or talk segments are written. |
+| `GOOGLE_API_KEY` | *(empty)* | Key for Google Gemini script writing. Without this, no DJ scripts are written. |
 | `GEMINI_MODEL` | `gemini-3.5-flash` | Gemini model used for script writing. |
 | `FISH_AUDIO_API_KEY` | *(empty)* | Key for Fish Audio voice rendering. Without this, DJ scripts aren't spoken aloud. |
 
@@ -186,71 +185,26 @@ Managed on the **Shows** page. Shows define scheduled programming blocks.
 
 | Field | What It Does |
 |-------|-------------|
-| **Name** | A label for the show (e.g., "Morning Talk", "Late Night Jazz"). |
-| **Type** | `music` (standard music), `talk` (all-talk), or `hybrid` (alternating). |
-| **Start/End Time** | The time window when this show runs (in station timezone). |
-| **Days of Week** | Which days the show runs (e.g., Mon, Wed, Fri). |
-| **Priority** | Higher priority shows take precedence when time slots overlap. |
-| **Talk Config ID** | Links to a talk show config (for talk and hybrid shows). |
-| **Call Config ID** | Links to a call-in config (optional). |
+| **Name** | A label for the block (e.g., "Morning Drive", "Late Night Jazz"). |
+| **Play Duration** | How many minutes the block runs before the next one takes over. |
+| **Order** | Position in the loop. Blocks play in this order and repeat. |
+| **Music Styles** | Which styles this block draws from. Leave empty to use all active styles. |
+| **DJ Personality Config** | Optionally override the station-default DJ persona for this block. |
 | **Active** | Toggle to enable/disable without deleting. |
 
-Validation: type must be `music`, `talk`, or `hybrid`; duration must be 1-1440 minutes; queue order cannot be negative.
+Validation: duration must be 1-1440 minutes; queue order cannot be negative.
 
-When no shows are scheduled for the current time, the station runs in its default music mode. This ensures backward compatibility — you don't need to create any shows if you just want music.
-
----
-
-## 8. Talk Show Configuration (Web UI)
-
-Managed on the **Talk Shows** page. Each config defines a talk show format.
-
-### Talk Show Config
-
-| Field | What It Does |
-|-------|-------------|
-| **Name** | Label for this config (e.g., "Tech Talk", "Morning Debate"). |
-| **Host Voice ID** | Voice provider ID for the main host. |
-| **Host Personality Prompt** | Describes the host's personality and speaking style. |
-| **Co-host Voices** | JSON array of co-host voices for multi-speaker segments. Format: `[{"name": "Co-host", "voice_id": "...", "personality_prompt": "..."}]` |
-| **Segment Min/Max Duration** | Duration range in seconds for generated segments. |
-| **Topic Rotation** | How topics are selected: `weighted` (by weight), `sequential` (in order), or `random`. |
-| **Max Speakers** | Maximum voices in a single segment (1-8). |
-
-Validation: name cannot be blank, segment durations must be 1-7200 seconds with minimum duration no longer than maximum duration, segment gap must be 0-100 seconds, topic rotation must be `weighted`, `sequential`, or `random`, and max speakers must be 1-8.
-
-### Topics
-
-Each talk show config has a list of topics the AI discusses.
-
-| Field | What It Does |
-|-------|-------------|
-| **Title** | Short topic name (e.g., "AI in Healthcare"). |
-| **Prompt** | Detailed instructions for what the AI should discuss. |
-| **Type** | `monologue` (solo), `conversation` (natural chat), `debate` (opposing views), or `interview` (Q&A format). |
-| **Weight** | How often this topic is selected relative to others (like music style weights). |
-| **Max Plays** | Optional limit on how many times this topic is used. |
-| **Notes** | Optional additional context for the AI. |
-
-Validation: title and prompt cannot be blank, type must be `monologue`, `conversation`, `debate`, or `interview`, weight must be greater than 0, and max plays must be at least 1 when set.
-
-### How topic selection works
-
-When the talk engine needs a new segment:
-
-1. Filters to only **active** topics that haven't exceeded `max_plays`
-2. Avoids the **most recently used topic**
-3. Selects based on the config's **rotation strategy** (weighted, sequential, or random)
+When no blocks are scheduled, the station runs with the station-default styles and DJ. You don't need to create any blocks if you just want music.
 
 ---
 
-## 9. Call-in Configuration (Roadmap)
+## 8. Call-in Configuration (Roadmap)
 
 > **Not yet implemented.** Listener call-in (Twilio telephony, a Calls page, and a real-time conversation AI) is a planned feature and has no settings in the current release.
 
 ---
 
-## 10. Audio Standards
+## 9. Audio Standards
 
 All audio is processed through the audio pipeline before entering any queue. This ensures consistent quality across AI-generated tracks, DJ breaks, and fallback audio.
 
@@ -269,7 +223,7 @@ You don't need to configure any of this — it's applied automatically to everyt
 
 ---
 
-## 11. Rate Limits
+## 10. Rate Limits
 
 Each AI provider has built-in rate limiting to avoid being throttled or banned:
 
@@ -285,22 +239,22 @@ You don't need to configure rate limits — they're built into each provider.
 
 ---
 
-## 12. Background Loops
+## 11. Background Loops
 
 The station runs several background tasks that check on things periodically:
 
 | Loop | Runs Every | What It Does |
 |------|:----------:|-------------|
-| **Buffer Check** | 30 seconds | Checks if the music/talk queue is below target and triggers generation. During talk shows, fills talk segment buffer instead. |
-| **Playout Check** | 5 seconds | Queues the next track or talk segment in Liquidsoap, triggers DJ breaks at the right time |
-| **Show Transition** | 30 seconds | Detects show changes (start/end), emits events, switches between music and talk modes |
+| **Buffer Check** | 30 seconds | Checks if the music queue is below target and triggers generation |
+| **Playout Check** | 5 seconds | Queues the next track in Liquidsoap, triggers DJ breaks at the right time |
+| **Show Transition** | 30 seconds | Detects block changes (start/end), emits events, queues the block intro |
 | **Cleanup** | 1 hour | Archives played tracks, deletes old files, checks disk space |
 
 Each loop has independent error recovery. If one fails, it backs off gradually (up to 10x the normal interval) to avoid hammering broken services, while the other loops continue normally.
 
 ---
 
-## 13. Docker & Infrastructure
+## 12. Docker & Infrastructure
 
 ### Audio Directories
 
@@ -308,7 +262,6 @@ Each loop has independent error recovery. If one fails, it backs off gradually (
 |------|--------------|-----------|
 | `audio/tracks/` | AI-generated music waiting to play | Buffer manager |
 | `audio/breaks/` | DJ break audio files | DJ brain |
-| `audio/talks/` | Generated talk show segments | Talk show engine |
 | `audio/fallback/` | Emergency audio (you must add at least 1 file) | You |
 | `audio/archive/` | Played tracks (auto-cleaned per retention policy) | Cleanup loop |
 

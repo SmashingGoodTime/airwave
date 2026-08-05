@@ -19,7 +19,6 @@ from server.models.playlog import PlayLog
 from server.models.program_item import ProgramItem
 from server.models.station import Station
 from server.models.style import Style
-from server.models.talk_segment import TalkSegment
 from server.models.track import Track
 from tests.conftest import MockMusicProvider
 
@@ -273,7 +272,7 @@ class TestStylesRouter:
         style_id = style_resp.json()["id"]
         show_resp = await client.post(
             "/api/shows",
-            json={"name": "Block", "show_type": "music", "style_ids": [style_id]},
+            json={"name": "Block", "style_ids": [style_id]},
         )
         assert show_resp.status_code == 201
 
@@ -665,7 +664,6 @@ class TestDashboardRouter:
 
         class FakeScheduler:
             is_streaming = True
-            streaming_show_type = "music"
 
         previous_scheduler = getattr(app.state, "scheduler", None)
         app.state.scheduler = FakeScheduler()
@@ -790,11 +788,6 @@ class TestDashboardRouter:
             script_text="Break",
             status="ready",
         )
-        talk_segment = TalkSegment(
-            audio_filepath=str(ready_file),
-            segment_type="monologue",
-            status="ready",
-        )
         asset_missing_file = AudioAsset(
             asset_type="music_track",
             normalized_filepath=str(missing_file),
@@ -806,7 +799,7 @@ class TestDashboardRouter:
             status="ready",
         )
         db_session.add_all(
-            [track, dj_break, talk_segment, asset_missing_file, asset_for_orphan]
+            [track, dj_break, asset_missing_file, asset_for_orphan]
         )
         await db_session.flush()
         db_session.add(
@@ -843,7 +836,6 @@ class TestDashboardRouter:
         data = resp.json()
         assert data["summary"]["unmirrored_ready_tracks"] == 1
         assert data["summary"]["unmirrored_ready_breaks"] == 1
-        assert data["summary"]["unmirrored_ready_talk_segments"] == 1
         assert data["summary"]["program_items_without_assets"] == 1
         assert data["summary"]["ready_assets_missing_files"] == 1
         assert data["summary"]["recent_failed_jobs"] == 1
@@ -1159,9 +1151,9 @@ class TestShowsRouter:
         "payload",
         [
             {"name": ""},
-            {"name": "Bad Type", "show_type": "weather"},
             {"name": "Zero Duration", "duration_minutes": 0},
             {"name": "Negative Duration", "duration_minutes": -5},
+            {"name": "Negative Order", "queue_order": -1},
         ],
     )
     async def test_create_rejects_invalid_show_fields(
@@ -1175,9 +1167,9 @@ class TestShowsRouter:
         "payload",
         [
             {"name": ""},
-            {"show_type": "weather"},
             {"duration_minutes": 0},
             {"duration_minutes": -5},
+            {"queue_order": -1},
         ],
     )
     async def test_update_rejects_invalid_show_fields(
@@ -1185,7 +1177,7 @@ class TestShowsRouter:
     ):
         create_resp = await client.post(
             "/api/shows",
-            json={"name": "Morning Block", "show_type": "music"},
+            json={"name": "Morning Block"},
         )
         assert create_resp.status_code == 201
 
@@ -1221,183 +1213,3 @@ class TestAudioFiles:
         assert resp.status_code == 200
         assert resp.content == b"fake wav"
         assert "text/html" not in resp.headers["content-type"]
-
-
-# ---------------------------------------------------------------------------
-# Talk show router
-# ---------------------------------------------------------------------------
-
-
-class TestTalkShowRouter:
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "payload",
-        [
-            {"name": "", "segment_min_duration": 120},
-            {"name": "Talk", "segment_min_duration": 0},
-            {"name": "Talk", "segment_max_duration": 0},
-            {"name": "Talk", "segment_gap": -1},
-            {"name": "Talk", "topic_rotation": "chaos"},
-            {"name": "Talk", "max_speakers": 0},
-        ],
-    )
-    async def test_create_rejects_invalid_talk_config_fields(
-        self, client: AsyncClient, payload: dict
-    ):
-        resp = await client.post("/api/talk/configs", json=payload)
-        assert resp.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_create_accepts_sequential_topic_rotation(self, client: AsyncClient):
-        resp = await client.post(
-            "/api/talk/configs",
-            json={"name": "Sequential Talk", "topic_rotation": "sequential"},
-        )
-
-        assert resp.status_code == 201
-        assert resp.json()["topic_rotation"] == "sequential"
-
-    @pytest.mark.asyncio
-    async def test_create_rejects_segment_min_greater_than_max(
-        self, client: AsyncClient
-    ):
-        resp = await client.post(
-            "/api/talk/configs",
-            json={
-                "name": "Bad Timing",
-                "segment_min_duration": 900,
-                "segment_max_duration": 300,
-            },
-        )
-
-        assert resp.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_update_rejects_segment_min_greater_than_max(
-        self, client: AsyncClient
-    ):
-        create_resp = await client.post(
-            "/api/talk/configs",
-            json={
-                "name": "Timing",
-                "segment_min_duration": 120,
-                "segment_max_duration": 300,
-            },
-        )
-        config_id = create_resp.json()["id"]
-
-        resp = await client.put(
-            f"/api/talk/configs/{config_id}",
-            json={"segment_min_duration": 600, "segment_max_duration": 300},
-        )
-
-        assert resp.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_update_rejects_min_above_existing_max(self, client: AsyncClient):
-        create_resp = await client.post(
-            "/api/talk/configs",
-            json={
-                "name": "Timing",
-                "segment_min_duration": 120,
-                "segment_max_duration": 300,
-            },
-        )
-        config_id = create_resp.json()["id"]
-
-        resp = await client.put(
-            f"/api/talk/configs/{config_id}",
-            json={"segment_min_duration": 600},
-        )
-
-        assert resp.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_update_rejects_max_below_existing_min(self, client: AsyncClient):
-        create_resp = await client.post(
-            "/api/talk/configs",
-            json={
-                "name": "Timing",
-                "segment_min_duration": 300,
-                "segment_max_duration": 600,
-            },
-        )
-        config_id = create_resp.json()["id"]
-
-        resp = await client.put(
-            f"/api/talk/configs/{config_id}",
-            json={"segment_max_duration": 120},
-        )
-
-        assert resp.status_code == 422
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "payload",
-        [
-            {"title": "", "prompt": "Discuss.", "talk_config_id": 1},
-            {"title": "Topic", "prompt": "", "talk_config_id": 1},
-            {"title": "Topic", "prompt": "Discuss.", "talk_config_id": 1, "topic_type": "weather"},
-            {"title": "Topic", "prompt": "Discuss.", "talk_config_id": 1, "weight": 0},
-            {"title": "Topic", "prompt": "Discuss.", "talk_config_id": 1, "max_plays": 0},
-        ],
-    )
-    async def test_create_rejects_invalid_topic_fields(
-        self, client: AsyncClient, payload: dict
-    ):
-        resp = await client.post("/api/talk/topics", json=payload)
-        assert resp.status_code == 422
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("limit", [0, -1, 101])
-    async def test_segments_rejects_invalid_limit(
-        self, client: AsyncClient, limit: int
-    ):
-        resp = await client.get(f"/api/talk/segments?limit={limit}")
-        assert resp.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_preview_accepts_json_body(self, client: AsyncClient, monkeypatch):
-        """The React client posts preview parameters as JSON."""
-        from server.engine.talk_show import TalkShowEngine
-
-        expected_topic_id = None
-
-        async def fake_generate_segment(
-            self, session, show, config=None, topic_id=None, preview=False
-        ):
-            class Segment:
-                id = 123
-                segment_type = "conversation"
-                script_text = '[{"speaker":"Host","text":"Hello"}]'
-                duration = 4.0
-                speakers = '["Host"]'
-                audio_filepath = "audio/talks/preview.wav"
-
-            assert topic_id == expected_topic_id
-            # Router previews must never touch rotation/timeline state.
-            assert preview is True
-            return Segment()
-
-        monkeypatch.setattr(TalkShowEngine, "generate_segment", fake_generate_segment)
-
-        resp = await client.post("/api/talk/configs", json={"name": "Previewable"})
-        config_id = resp.json()["id"]
-        resp = await client.post(
-            "/api/talk/topics",
-            json={
-                "talk_config_id": config_id,
-                "title": "Test topic",
-                "prompt": "Discuss the test.",
-                "topic_type": "conversation",
-            },
-        )
-        expected_topic_id = resp.json()["id"]
-
-        resp = await client.post(
-            "/api/talk/preview",
-            json={"config_id": config_id, "topic_id": expected_topic_id},
-        )
-
-        assert resp.status_code == 200
-        assert resp.json()["segment_id"] == 123

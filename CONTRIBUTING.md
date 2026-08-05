@@ -70,18 +70,18 @@ This starts the app, Liquidsoap, and Icecast together. The UI is at `http://loca
 
 ```
 server/           Python backend (FastAPI)
-  models/         SQLAlchemy ORM models (Track, Style, Show, TalkShowConfig, etc.)
-  routers/        API route handlers (shows, talk_shows, calls, styles, etc.)
+  models/         SQLAlchemy ORM models (Track, Style, Show, DJConfig, etc.)
+  routers/        API route handlers (shows, styles, dj_config, dashboard, etc.)
   providers/      Provider abstraction layer (music, voice, scriptwriter, telephony, conversation)
-  engine/         Core station logic (scheduler, buffer, DJ brain, talk show, call manager, playout)
+  engine/         Core station logic (scheduler, buffer, DJ brain, playout)
   events/         Event bus and handlers
   utils/          Shared utilities (rate limiter, audio helpers)
 frontend/src/     React frontend (Vite)
-  pages/          Page components (Dashboard, Shows, TalkShowConfig, CallDashboard, etc.)
+  pages/          Page components (Dashboard, Shows, Styles, DJConfig, etc.)
   components/     Reusable UI components
 liquidsoap/       Liquidsoap playout configuration (includes harbor input for live calls)
 icecast/          Icecast streaming server configuration
-audio/            Audio file storage (tracks, breaks, talks, calls, fallback, archive)
+audio/            Audio file storage (tracks, breaks, calls, fallback, archive)
 docs/             Documentation
 ```
 
@@ -234,7 +234,6 @@ Here are some areas where contributions are welcome:
 
 - **New providers** — Music generation, TTS voices, scriptwriter backends, telephony services, conversation AI
 - **Event handlers** — Discord bots, webhook integrations, now-playing widgets
-- **Talk show features** — New topic types, better multi-voice stitching, conversation flow improvements
 - **Call-in improvements** — Additional telephony providers, call queue management, moderation tools
 - **UI improvements** — Better visualizations, mobile responsiveness, accessibility
 - **Tests** — Unit and integration tests for any module

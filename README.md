@@ -2,7 +2,7 @@
 
 An AI-powered radio station that runs itself. It creates original music, writes DJ scripts, speaks them in a realistic voice, and streams everything live — all from one command.
 
-Now with **Talk Show Mode** for all-talk AI broadcasts. (**Listener Call-in** — real callers talking to your AI host on air — is on the roadmap; see [Listener Call-in](#8-listener-call-in-roadmap).)
+(**Listener Call-in** — real callers talking to your AI host on air — is on the roadmap; see [Listener Call-in](#7-listener-call-in-roadmap).)
 
 No music library needed. No recording equipment. No experience required.
 
@@ -16,13 +16,12 @@ No music library needed. No recording equipment. No experience required.
 4. [Getting Started](#4-getting-started)
 5. [The Setup Wizard](#5-the-setup-wizard)
 6. [Using Your Station](#6-using-your-station)
-7. [Talk Shows](#7-talk-shows)
-8. [Listener Call-in (Roadmap)](#8-listener-call-in-roadmap)
-9. [Development Setup](#9-development-setup)
-10. [Project Structure](#10-project-structure)
-11. [API Reference](#11-api-reference)
-12. [Tech Stack](#12-tech-stack)
-13. [Security](#13-security)
+7. [Listener Call-in (Roadmap)](#7-listener-call-in-roadmap)
+8. [Development Setup](#8-development-setup)
+9. [Project Structure](#9-project-structure)
+10. [API Reference](#10-api-reference)
+11. [Tech Stack](#11-tech-stack)
+12. [Security](#12-security)
 14. [Further Reading](#14-further-reading)
 15. [License](#15-license)
 
@@ -35,7 +34,6 @@ AI Radio DJ is a complete, self-running radio station powered by artificial inte
 - **Creates original music** from text descriptions you provide (e.g., "relaxing lo-fi hip hop with piano")
 - **Writes DJ scripts** — natural, conversational breaks between songs
 - **Speaks the scripts** in a realistic AI-generated voice
-- **Runs talk shows** — AI-hosted monologues, multi-voice conversations, debates, and interviews on topics you define
 - **Streams everything live** as a continuous broadcast anyone can listen to
 - **Manages itself** — generates new music when the queue gets low, rotates styles, handles errors
 
@@ -63,9 +61,8 @@ Behind the scenes:
 |  Scheduler  -->  Music Buffer  -->  Playout Queue     |
 |      |                |                   |           |
 |  DJ Brain   -->  Script + Voice           |           |
-|      |                                    |           |
-|  Talk Engine --> Talk Segments            v           |
-|                                       Liquidsoap      |
+|      |                                    v           |
+|      +---------------------------->  Liquidsoap       |
 |                                           |           |
 |                                       Icecast         |
 |                                           |           |
@@ -78,7 +75,7 @@ Behind the scenes:
 | Service | What It Does | Default Provider |
 |---------|-------------|-----------------|
 | Music Generation | Creates original songs from your style descriptions | [Suno](https://suno.com) |
-| Script Writing | Writes DJ scripts and talk show segments | [Google Gemini](https://aistudio.google.com) |
+| Script Writing | Writes the DJ scripts between songs | [Google Gemini](https://aistudio.google.com) |
 | DJ Voice | Speaks the DJ scripts in a realistic voice | [Fish Audio](https://fish.audio) |
 
 ---
@@ -92,7 +89,7 @@ Behind the scenes:
 ### Recommended (for full functionality)
 
 - **A Suno account** — For music generation. [Sign up at suno.com](https://suno.com)
-- **A Google AI Studio account** — For DJ script writing and talk shows. [Sign up at aistudio.google.com](https://aistudio.google.com)
+- **A Google AI Studio account** — For DJ script writing. [Sign up at aistudio.google.com](https://aistudio.google.com)
 - **A Fish Audio account** — For the DJ's voice. [Sign up at fish.audio](https://fish.audio)
 
 Each service has a free tier you can start with. You'll need an **API key** from each one — the setup wizard will show you exactly where to find them.
@@ -230,13 +227,9 @@ The **Announcements** page lets you add messages your DJ will mention during bre
 
 ### Show Schedule
 
-The **Shows** page lets you create scheduled show blocks. Each show has a type, time window, and days of the week:
+The **Shows** page lets you create scheduled program blocks. Each block sets how long it runs, which music styles it draws from, and which DJ persona hosts it. Blocks play in queue order and loop.
 
-- **Music** — Standard music programming (the default behavior)
-- **Talk** — All-talk AI show with no music
-- **Hybrid** — Alternates between music and talk segments
-
-When no show is scheduled, the station runs in its default music mode. Shows with higher priority take precedence when time slots overlap.
+When no show is scheduled, the station runs with the station-default styles and DJ.
 
 ### Play Log
 
@@ -258,47 +251,15 @@ Next time you run `docker-compose up`, everything picks up where it left off —
 
 ---
 
-## 7. Talk Shows
-
-Talk shows let your station run all-talk AI programming — no music, just voices discussing topics you define.
-
-### Setting Up a Talk Show
-
-1. Go to the **Talk Shows** page and create a talk show config
-2. Set up the host voice and personality (the main speaker)
-3. Optionally add co-host voices for multi-voice conversations
-4. Add topics — each topic has a prompt, type, and weight
-
-### Topic Types
-
-| Type | What It Sounds Like |
-|------|-------------------|
-| **Monologue** | A single host speaking on the topic |
-| **Conversation** | Two or more voices discussing naturally |
-| **Debate** | Opposing viewpoints on a subject |
-| **Interview** | Host asks questions, guest responds |
-
-### How It Works
-
-The talk show engine selects topics based on weights (like music style selection), generates scripts via the script writer, renders each speaker's lines with the appropriate voice, and stitches the audio together. Segments are buffered ahead of time so there's no gap.
-
-### Scheduling Talk Shows
-
-Go to the **Shows** page and create a show with type "Talk". Link it to your talk show config, set the time window and days, and the scheduler handles the rest. When the show's time arrives, the station switches from music to talk automatically.
-
----
-
-## 8. Listener Call-in (Roadmap)
+## 7. Listener Call-in (Roadmap)
 
 > **Not yet implemented.** Listener call-in is a planned feature — it is **not** in the current codebase. There is no Calls page, no `/api/calls/*` endpoints, and no Twilio or OpenAI integration yet.
 
 The plan: let real listeners call a phone number (via Twilio) and talk to an AI host (via a realtime conversation API), either live on air or pre-recorded, screened, and played back later. Some groundwork already exists — the Liquidsoap config includes a harbor input reserved for live caller audio — but the call manager, telephony provider, and conversation AI are not built.
 
-Until then, Talk Shows (above) are the way to put AI voices on air.
-
 ---
 
-## 9. Development Setup
+## 8. Development Setup
 
 If you want to modify the code or run without Docker:
 
@@ -336,7 +297,7 @@ The built files go to `frontend/dist/` and are served by FastAPI automatically.
 
 ---
 
-## 10. Project Structure
+## 9. Project Structure
 
 ```
 ai-radio-dj/
@@ -347,24 +308,21 @@ ai-radio-dj/
 │   ├── models/                  # Data models (Track, Style, Show, etc.)
 │   ├── routers/                 # API endpoints
 │   │   ├── shows.py             #   Show schedule management
-│   │   ├── talk_shows.py        #   Talk config & topics
 │   │   └── ...                  #   Styles, DJ, dashboard, etc.
 │   ├── providers/               # AI service integrations
 │   │   ├── music/suno.py        #   Music generation
-│   │   ├── scriptwriter/google.py  # DJ scripts + talk segments
+│   │   ├── scriptwriter/google.py  # DJ break scripts
 │   │   └── voice/fish.py        #   Text-to-speech
 │   ├── engine/                  # Core station logic
 │   │   ├── scheduler.py         #   Show-aware master orchestrator
 │   │   ├── music_buffer.py      #   Track queue manager
 │   │   ├── dj_brain.py          #   DJ break timing & context
-│   │   ├── talk_show.py         #   Talk segment generation engine
 │   │   └── playout.py           #   Liquidsoap interface
 │   ├── events/                  # Real-time event system
 │   └── utils/                   # Audio processing, rate limiting
 ├── frontend/src/                # React web dashboard
 │   ├── pages/
 │   │   ├── Shows.jsx            #   Show schedule management
-│   │   ├── TalkShowConfig.jsx   #   Talk host/topic config
 │   │   └── ...                  #   Dashboard, Styles, DJ, etc.
 ├── liquidsoap/station.liq       # Audio playout config
 ├── icecast/icecast.xml          # Stream server config
@@ -372,7 +330,6 @@ ai-radio-dj/
 ├── audio/                       # All audio files
 │   ├── tracks/                  #   Generated music
 │   ├── breaks/                  #   DJ break audio
-│   ├── talks/                   #   Talk show segments
 │   ├── fallback/                #   Emergency audio
 │   └── archive/                 #   Played tracks
 └── docs/                        # Documentation
@@ -380,7 +337,7 @@ ai-radio-dj/
 
 ---
 
-## 11. API Reference
+## 10. API Reference
 
 All endpoints are under `/api/`. The web dashboard uses these same endpoints.
 
@@ -412,17 +369,6 @@ All endpoints are under `/api/`. The web dashboard uses these same endpoints.
 | DELETE | `/api/shows/{id}` | Delete a show |
 | POST | `/api/shows/{id}/toggle` | Enable or disable a show |
 | GET | `/api/shows/active` | Get the currently active show |
-| **Talk Shows** | | |
-| GET | `/api/talk/configs` | List talk show configurations |
-| POST | `/api/talk/configs` | Create a talk show config |
-| PUT | `/api/talk/configs/{id}` | Update a talk show config |
-| DELETE | `/api/talk/configs/{id}` | Delete a talk show config |
-| GET | `/api/talk/configs/{id}/topics` | List topics for a config |
-| POST | `/api/talk/topics` | Create a topic |
-| PUT | `/api/talk/topics/{id}` | Update a topic |
-| DELETE | `/api/talk/topics/{id}` | Delete a topic |
-| GET | `/api/talk/segments` | List generated talk segments |
-| POST | `/api/talk/preview` | Generate a preview talk segment |
 | **Dashboard** | | |
 | GET | `/api/dashboard/status` | Current station status (includes active show) |
 | GET | `/api/dashboard/health` | AI service health check |
@@ -436,7 +382,7 @@ All endpoints are under `/api/`. The web dashboard uses these same endpoints.
 
 ---
 
-## 12. Tech Stack
+## 11. Tech Stack
 
 | What | Technology |
 |------|-----------|
@@ -452,7 +398,7 @@ All endpoints are under `/api/`. The web dashboard uses these same endpoints.
 
 ---
 
-## 13. Security
+## 12. Security
 
 A few things to know before running the station anywhere other than your own machine:
 

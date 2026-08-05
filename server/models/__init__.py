@@ -11,9 +11,6 @@ from server.models.show import Show
 from server.models.show_style import show_styles
 from server.models.station import Station
 from server.models.style import Style
-from server.models.talk_segment import TalkSegment
-from server.models.talk_show_config import TalkShowConfig
-from server.models.talk_topic import TalkTopic
 from server.models.track import Track
 
 __all__ = [
@@ -28,8 +25,5 @@ __all__ = [
     "show_styles",
     "Station",
     "Style",
-    "TalkSegment",
-    "TalkShowConfig",
-    "TalkTopic",
     "Track",
 ]

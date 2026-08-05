@@ -38,7 +38,7 @@ const PROVIDERS = [
     inputPlaceholder: 'Paste a Google AI API key...',
     configuredText: 'Google AI key saved',
     missingText: 'Google AI key missing',
-    impact: 'Required for writing DJ breaks, transitions, and talk content.',
+    impact: 'Required for writing DJ breaks and transitions.',
     href: 'https://aistudio.google.com/apikey',
     linkLabel: 'Get a Google AI API key',
   },

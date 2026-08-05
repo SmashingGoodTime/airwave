@@ -7,13 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.models.dj_break import DJBreak
 from server.models.program_item import ProgramItem
-from server.models.talk_segment import TalkSegment
 from server.models.track import Track
 
 SOURCE_MODELS = (
     ("tracks", Track, Track.id),
     ("dj_breaks", DJBreak, DJBreak.id),
-    ("talk_segments", TalkSegment, TalkSegment.id),
 )
 
 
@@ -29,23 +27,16 @@ async def build_timeline_reconciliation(session: AsyncSession) -> dict[str, Any]
     music_comparison = await _compare_music_candidate(session)
     if music_comparison is not None:
         comparisons.append(music_comparison)
-    comparisons.extend(await _compare_talk_candidates(session))
 
     music_candidate_mismatch = sum(
         1
         for comparison in comparisons
         if comparison["queue"] == "music" and not comparison["aligned"]
     )
-    talk_candidate_mismatch = sum(
-        1
-        for comparison in comparisons
-        if comparison["queue"] == "talk" and not comparison["aligned"]
-    )
 
     summary = {
         "duplicate_source_mirrors": duplicate_source_mirrors,
         "music_candidate_mismatch": music_candidate_mismatch,
-        "talk_candidate_mismatch": talk_candidate_mismatch,
         "legacy_ready_missing_timeline": legacy_ready_missing_timeline,
         "timeline_ready_source_not_ready": timeline_ready_source_not_ready,
     }
@@ -59,11 +50,6 @@ async def build_timeline_reconciliation(session: AsyncSession) -> dict[str, Any]
             "music_candidate_mismatch",
             music_candidate_mismatch,
             "music scheduler candidate differs from timeline candidate",
-        ),
-        _issue(
-            "talk_candidate_mismatch",
-            talk_candidate_mismatch,
-            "talk scheduler candidate differs from timeline candidate",
         ),
         _issue(
             "legacy_ready_missing_timeline",
@@ -91,71 +77,6 @@ async def _compare_music_candidate(session: AsyncSession) -> dict[str, Any] | No
     if legacy is None and timeline is None:
         return None
     return _comparison("music", None, legacy, timeline)
-
-
-async def _compare_talk_candidates(session: AsyncSession) -> list[dict[str, Any]]:
-    legacy_by_show = await _legacy_talk_candidates_by_show(session)
-    timeline_by_show = await _timeline_talk_candidates_by_show(session)
-
-    comparisons = []
-    for show_id, legacy in legacy_by_show.items():
-        timeline = timeline_by_show.get(show_id)
-        if legacy is None and timeline is None:
-            continue
-        comparisons.append(_comparison("talk", show_id, legacy, timeline))
-    return comparisons
-
-
-async def _legacy_talk_candidates_by_show(
-    session: AsyncSession,
-) -> dict[int, dict[str, Any]]:
-    result = await session.execute(
-        select(TalkSegment)
-        .where(TalkSegment.status == "ready", TalkSegment.show_id.is_not(None))
-        .order_by(
-            TalkSegment.show_id.asc(),
-            TalkSegment.created_at.asc(),
-            TalkSegment.id.asc(),
-        )
-    )
-
-    candidates: dict[int, dict[str, Any]] = {}
-    for segment in result.scalars().all():
-        if segment.show_id not in candidates:
-            candidates[segment.show_id] = _source(
-                "talk_segments", segment.id, segment.segment_type
-            )
-    return candidates
-
-
-async def _timeline_talk_candidates_by_show(
-    session: AsyncSession,
-) -> dict[int, dict[str, Any]]:
-    result = await session.execute(
-        select(ProgramItem, TalkSegment.show_id)
-        .join(TalkSegment, TalkSegment.id == ProgramItem.source_id)
-        .where(
-            ProgramItem.status == "ready",
-            ProgramItem.item_type == "talk_segment",
-            ProgramItem.source_table == "talk_segments",
-            TalkSegment.status == "ready",
-            TalkSegment.show_id.is_not(None),
-        )
-        .order_by(
-            TalkSegment.show_id.asc(),
-            ProgramItem.position.asc(),
-            ProgramItem.planned_start_at.is_(None).asc(),
-            ProgramItem.planned_start_at.asc(),
-            ProgramItem.created_at.asc(),
-            ProgramItem.id.asc(),
-        )
-    )
-
-    candidates: dict[int, dict[str, Any]] = {}
-    for item, show_id in result.all():
-        if show_id not in candidates:
-            candidates[show_id] = _source("talk_segments", item.source_id, item.title)
-    return candidates
 
 
 async def _legacy_music_candidate(session: AsyncSession) -> dict[str, Any] | None:
@@ -248,9 +169,6 @@ async def _count_timeline_ready_source_not_ready(session: AsyncSession) -> int:
     total = 0
     total += await _count_ready_timeline_source_drift(session, "tracks", Track)
     total += await _count_ready_timeline_source_drift(session, "dj_breaks", DJBreak)
-    total += await _count_ready_timeline_source_drift(
-        session, "talk_segments", TalkSegment
-    )
     return total
 
 
@@ -318,6 +236,6 @@ def _parity_status(summary: dict[str, int]) -> str:
         or summary["timeline_ready_source_not_ready"] > 0
     ):
         return "needs_attention"
-    if summary["music_candidate_mismatch"] > 0 or summary["talk_candidate_mismatch"] > 0:
+    if summary["music_candidate_mismatch"] > 0:
         return "drifting"
     return "aligned"

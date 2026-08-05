@@ -1334,29 +1334,6 @@ a:hover {
   color: #ff6b81;
 }
 
-/* Talk Show Co-host Cards */
-.talk-cohost-card {
-  background: #0f0f20;
-  border: 1px solid #2a2a4a;
-  border-radius: 8px;
-  padding: 16px;
-  margin-bottom: 12px;
-}
-
-.talk-cohost-card:hover {
-  border-color: #3a3a5a;
-}
-
-.talk-empty-cohosts {
-  background: rgba(52, 152, 219, 0.06);
-  border: 1px dashed #2a2a4a;
-  border-radius: 8px;
-  padding: 20px;
-  text-align: center;
-  color: #666;
-  font-size: 13px;
-  line-height: 1.5;
-}
 
 /* Info callout */
 .info-callout {

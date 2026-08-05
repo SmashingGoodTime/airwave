@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 class StartStreamingRequest(BaseModel):
     """Request body for starting or switching a broadcast."""
 
-    show_type: Optional[str] = None
     show_id: Optional[int] = None
     broadcast_mode: Optional[str] = None  # "manual" or "scheduled"
 
@@ -74,19 +73,16 @@ async def get_streaming_status(request: Request) -> dict:
         )
         
         active_show_name = None
-        show_type = "music"
         duration_minutes = 30
         if current_show_id:
             show_result = await session.execute(select(Show).where(Show.id == current_show_id))
             show = show_result.scalar_one_or_none()
             if show:
                 active_show_name = show.name
-                show_type = show.show_type
                 duration_minutes = show.duration_minutes
 
     return {
         "streaming": scheduler.is_streaming,
-        "show_type": show_type,
         "broadcast_mode": broadcast_mode,
         "current_show_id": current_show_id,
         "active_show_name": active_show_name,

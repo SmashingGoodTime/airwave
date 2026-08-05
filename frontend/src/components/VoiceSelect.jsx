@@ -12,7 +12,7 @@ export const VOICE_CATEGORY_LABELS = {
 }
 
 // Category-grouped voice dropdown with a sample play/stop button.
-// Shared by DJConfig and TalkShowConfig so voice pickers look and
+// Shared by the pages with voice pickers so they look and
 // behave identically everywhere.
 function VoiceSelect({ value, onChange, label, voices, playingId, loadingSample, onPlaySample, loading = false }) {
   const groups = {}

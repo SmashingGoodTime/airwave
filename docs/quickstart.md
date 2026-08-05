@@ -15,11 +15,10 @@ A detailed walkthrough to get your AI radio station up and running. If you just 
 7. [Listening to Your Station](#7-listening-to-your-station)
 8. [How Your Station Runs Itself](#8-how-your-station-runs-itself)
 9. [Monitoring with the Dashboard](#9-monitoring-with-the-dashboard)
-10. [Setting Up Talk Shows](#10-setting-up-talk-shows)
-11. [Listener Call-in (Roadmap)](#11-listener-call-in-roadmap)
-12. [Stopping and Restarting](#12-stopping-and-restarting)
-13. [Troubleshooting](#13-troubleshooting)
-14. [Next Steps](#14-next-steps)
+10. [Listener Call-in (Roadmap)](#10-listener-call-in-roadmap)
+11. [Stopping and Restarting](#11-stopping-and-restarting)
+12. [Troubleshooting](#12-troubleshooting)
+13. [Next Steps](#13-next-steps)
 
 ---
 
@@ -95,7 +94,7 @@ Suno creates the original music for your station.
 
 ### Google Gemini (DJ Script Writing)
 
-Google Gemini writes what your DJ says between songs and generates talk show segments.
+Google Gemini writes what your DJ says between songs.
 
 1. Go to [aistudio.google.com](https://aistudio.google.com) and create an account
 2. Open **Get API key**
@@ -277,57 +276,24 @@ The dashboard at http://localhost:8000 updates in real time:
 
 | Section | What It Shows |
 |---------|--------------|
-| **Active Show** | The current show name and type (shown when a show is scheduled) |
+| **Active Show** | The current program block (shown when one is scheduled) |
 | **Now Playing** | Current track with title, style, and progress bar |
 | **Music Queue** | How many songs are ready. Green = healthy, yellow = getting low, red = critically low |
-| **Talk Segment Buffer** | How many talk segments are ready (shown during talk/hybrid shows) |
 | **AI Services** | Connection status for each AI service (music, scripts, voice, telephony, conversation AI) |
 | **Listen Live** | Embedded audio player for your stream |
-| **Recent Plays** | Scrolling history of tracks, DJ breaks, and talk segments |
+| **Recent Plays** | Scrolling history of tracks and DJ breaks |
 
 If you see the Music Queue dropping to zero, it means music generation can't keep up. Check the AI Services panel — if the music service shows "Error" or "Needs API key", that's the issue.
 
 ---
 
-## 10. Setting Up Talk Shows
+## 10. Listener Call-in (Roadmap)
 
-Once your basic station is running, you can add talk shows:
-
-### Step 1: Create a Talk Show Config
-
-Go to the **Talk Shows** page and click "Add Config". Set up:
-- A name for the config
-- Host voice ID (from your voice provider)
-- Host personality prompt — describe how the host speaks
-- Optionally add co-host voices for multi-speaker segments
-
-### Step 2: Add Topics
-
-With your config selected, click "Add Topic" and provide:
-- **Title** — What the topic is about
-- **Prompt** — Detailed instructions for the AI (the more detail, the better)
-- **Type** — Monologue, conversation, debate, or interview
-- **Weight** — How often this topic should come up
-
-### Step 3: Schedule the Show
-
-Go to the **Shows** page and create a new show:
-- Set the type to "Talk"
-- Choose your time window and days
-- Link it to your talk show config
-- Set priority (higher = takes precedence over overlapping shows)
-
-The station will automatically switch to talk mode during the scheduled time.
+> **Not yet implemented.** Listener call-in — real people calling a phone number and talking to your AI host — is a planned feature. There is no Calls page or telephony integration in the current release.
 
 ---
 
-## 11. Listener Call-in (Roadmap)
-
-> **Not yet implemented.** Listener call-in — real people calling a phone number and talking to your AI host — is a planned feature. There is no Calls page or telephony integration in the current release. Talk shows (above) are the way to put AI voices on air today.
-
----
-
-## 12. Stopping and Restarting
+## 11. Stopping and Restarting
 
 ### Stop your station
 
@@ -354,7 +320,7 @@ docker-compose logs -f app    # Just the main app
 
 ---
 
-## 13. Troubleshooting
+## 12. Troubleshooting
 
 ### "No music is playing"
 
@@ -393,17 +359,7 @@ This is normal — it means the WebSocket connection couldn't be established, so
 
 ---
 
-### "Talk shows aren't generating segments"
-
-1. Check that you have a **talk show config** with at least one **topic** added
-2. Check that a **show** with type "Talk" is scheduled for the current time and day
-3. Verify the **Google API key** is set - the script writer generates talk content
-4. Verify the **Fish Audio API key** is set - voices render the scripts
-5. Check the logs: `docker-compose logs app | grep talk`
-
----
-
-## 14. Next Steps
+## 13. Next Steps
 
 Now that your station is running:
 

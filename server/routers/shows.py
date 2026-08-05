@@ -1,7 +1,7 @@
 """Show schedule management API endpoints."""
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_serializer
@@ -21,11 +21,9 @@ class ShowCreate(BaseModel):
     """Schema for creating a new show block."""
 
     name: str = Field(min_length=1)
-    show_type: Literal["music", "talk", "hybrid"] = "music"
     active: bool = True
     duration_minutes: int = Field(default=30, ge=1, le=1440)
     queue_order: int = Field(default=0, ge=0)
-    talk_config_id: Optional[int] = None
     dj_config_id: Optional[int] = None
     style_ids: Optional[list[int]] = None
 
@@ -34,11 +32,9 @@ class ShowUpdate(BaseModel):
     """Schema for updating an existing show block."""
 
     name: Optional[str] = Field(default=None, min_length=1)
-    show_type: Optional[Literal["music", "talk", "hybrid"]] = None
     active: Optional[bool] = None
     duration_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
     queue_order: Optional[int] = Field(default=None, ge=0)
-    talk_config_id: Optional[int] = None
     dj_config_id: Optional[int] = None
     style_ids: Optional[list[int]] = None
 
@@ -48,11 +44,9 @@ class ShowResponse(BaseModel):
 
     id: int
     name: str
-    show_type: str
     active: bool
     duration_minutes: int
     queue_order: int
-    talk_config_id: Optional[int] = None
     dj_config_id: Optional[int] = None
     style_ids: list[int] = []
     created_at: datetime

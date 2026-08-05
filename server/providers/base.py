@@ -64,31 +64,6 @@ class ScriptWriterProvider(Provider):
         """
         ...
 
-    async def write_talk_segment(self, context: dict) -> dict:
-        """Generate a talk show segment script (monologue or conversation).
-
-        For monologues, returns plain text in script_text.
-        For conversations, returns structured JSON in script_text:
-        [{"speaker": "name", "text": "line"}, ...]
-
-        Args:
-            context: Dictionary containing:
-                - topic: The topic title and prompt
-                - segment_type: "monologue", "conversation", "debate", or "interview"
-                - speakers: List of speaker configs with name and personality
-                - show_name: The show's name
-                - host_personality: Host personality prompt
-                - previous_segments: Summaries of recent segments for continuity
-                - target_duration: Target segment length in seconds
-                - current_time: Station local time
-
-        Returns:
-            A dict with script_text, speakers list, estimated_duration, and metadata.
-        """
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support talk segment generation"
-        )
-
     async def rewrite_prompt(self, prompt: str, instruction: str) -> str:
         """Rewrite a text prompt according to an instruction.
 

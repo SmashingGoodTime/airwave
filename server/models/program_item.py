@@ -13,7 +13,7 @@ class ProgramItem(Base):
     """A single item on the station's planned or played timeline.
 
     This is the neutral playout abstraction that future scheduler work can use
-    for music, DJ breaks, talk segments, calls, live inputs, and fallback items.
+    for music, DJ breaks, calls, live inputs, and fallback items.
     """
 
     __tablename__ = "program_items"

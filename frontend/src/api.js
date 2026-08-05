@@ -218,48 +218,6 @@ export function toggleShow(id) {
   return apiFetch(`/shows/${id}/toggle`, { method: 'POST' })
 }
 
-// Talk Show Configs
-export function fetchTalkConfigs() {
-  return apiFetch('/talk/configs')
-}
-
-export function createTalkConfig(data) {
-  return apiFetch('/talk/configs', { method: 'POST', body: data })
-}
-
-export function updateTalkConfig(id, data) {
-  return apiFetch(`/talk/configs/${id}`, { method: 'PUT', body: data })
-}
-
-export function deleteTalkConfig(id) {
-  return apiFetch(`/talk/configs/${id}`, { method: 'DELETE' })
-}
-
-// Talk Topics
-export function fetchTopics(configId) {
-  return apiFetch(`/talk/configs/${configId}/topics`)
-}
-
-export function createTopic(data) {
-  return apiFetch('/talk/topics', { method: 'POST', body: data })
-}
-
-export function updateTopic(id, data) {
-  return apiFetch(`/talk/topics/${id}`, { method: 'PUT', body: data })
-}
-
-export function deleteTopic(id) {
-  return apiFetch(`/talk/topics/${id}`, { method: 'DELETE' })
-}
-
-export function fetchTalkSegments() {
-  return apiFetch('/talk/segments')
-}
-
-export function previewTalkSegment(data) {
-  return apiFetch('/talk/preview', { method: 'POST', body: data, timeout: 120000 })
-}
-
 // Providers
 export function fetchProviders() {
   return apiFetch('/providers')

@@ -169,35 +169,12 @@ def _on_show_transition(event: str, data: dict[str, Any]) -> None:
     """
     if event == "show.started":
         logger.info(
-            "Show started: '%s' (type=%s, id=%s)",
+            "Show started: '%s' (id=%s)",
             data.get("show_name", "?"),
-            data.get("show_type", "?"),
             data.get("show_id"),
         )
     else:
-        logger.info(
-            "Show ended: id=%s type=%s",
-            data.get("show_id"),
-            data.get("show_type", "?"),
-        )
-
-
-def _on_talk_segment(event: str, data: dict[str, Any]) -> None:
-    """Handle talk_segment events.
-
-    Args:
-        event: The event name.
-        data: Event data with segment details.
-    """
-    if "generated" in event:
-        logger.info(
-            "Talk segment generated: topic='%s' type=%s duration=%.1fs",
-            data.get("topic", "?"),
-            data.get("type", "?"),
-            data.get("duration") or 0,
-        )
-    else:
-        logger.info("Event: %s | %s", event, data)
+        logger.info("Show ended: id=%s", data.get("show_id"))
 
 
 def setup_default_handlers(bus: EventBus) -> None:
@@ -233,10 +210,5 @@ def setup_default_handlers(bus: EventBus) -> None:
     # Shows
     bus.on("show.started", _on_show_transition)
     bus.on("show.ended", _on_show_transition)
-
-    # Talk segments
-    bus.on("talk_segment.generated", _on_talk_segment)
-    bus.on("talk_segment.started", _on_talk_segment)
-    bus.on("talk_segment.ended", _on_talk_segment)
 
     logger.info("Default event handlers registered")

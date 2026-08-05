@@ -310,25 +310,6 @@ Add or update provider registry tests in `tests/test_providers.py` for:
 ]
 ```
 
-### What `write_talk_segment()` must return (ScriptWriterProvider)
-
-```python
-{
-    "script_text": "...",              # Plain text for monologues, JSON array for multi-voice
-    "segment_type": "conversation",    # monologue, conversation, debate, or interview
-    "estimated_duration": 120.0,       # Estimated seconds
-}
-```
-
-For multi-voice segments, `script_text` is a JSON array:
-
-```python
-[
-    {"speaker": "Host", "text": "Welcome back to the show..."},
-    {"speaker": "Co-host", "text": "Great topic today..."},
-]
-```
-
 ### TelephonyProvider methods
 
 ```python
@@ -474,11 +455,8 @@ Every event includes a `data` dict with context-specific fields.
 | `provider.recovered` | AI service responding again | `provider` |
 | `system.disk_warning` | Disk space below 5 GB | `free_gb`, `usage_pct` |
 | `system.disk_critical` | Disk space below 1 GB | `free_gb`, `usage_pct` |
-| `show.started` | A scheduled show has begun | `show_id`, `show_name`, `show_type` |
-| `show.ended` | A scheduled show has ended | `show_id`, `show_type` |
-| `talk_segment.generated` | Talk segment audio is ready | `segment_id`, `topic`, `type`, `duration` |
-| `talk_segment.started` | Talk segment begins playing | `segment_id`, `topic` |
-| `talk_segment.ended` | Talk segment finished playing | `segment_id` |
+| `show.started` | A scheduled show has begun | `show_id`, `show_name` |
+| `show.ended` | A scheduled show has ended | `show_id` |
 | `call.incoming` | A listener is calling in | `session_id`, `mode` |
 | `call.screening` | Caller is being screened by AI | `session_id` |
 | `call.connected` | Caller connected to AI host | `session_id` |

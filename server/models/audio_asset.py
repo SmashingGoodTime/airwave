@@ -11,8 +11,8 @@ from server.database import Base
 class AudioAsset(Base):
     """An immutable audio file prepared for station playout.
 
-    Generated tracks, DJ breaks, talk segments, calls, and fallback loops can
-    all reference this common asset record once normalized.
+    Generated tracks, DJ breaks, calls, and fallback loops can all
+    reference this common asset record once normalized.
     """
 
     __tablename__ = "audio_assets"

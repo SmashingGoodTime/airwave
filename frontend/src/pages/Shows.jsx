@@ -7,15 +7,8 @@ import {
   toggleShow,
   fetchStyles,
   fetchDJConfigs,
-  fetchTalkConfigs,
   reorderShows
 } from '../api'
-
-const TYPE_CONFIG = {
-  music: { color: '#4a9eff', bg: 'rgba(74, 158, 255, 0.12)', icon: '\u266B', label: 'Music' },
-  talk:  { color: '#ff6b6b', bg: 'rgba(255, 107, 107, 0.12)', icon: '\uD83C\uDF99', label: 'Talk' },
-  hybrid:{ color: '#ffa94d', bg: 'rgba(255, 169, 77, 0.12)', icon: '\u2726', label: 'Hybrid' },
-}
 
 function Shows() {
   const [shows, setShows] = useState([])
@@ -26,16 +19,13 @@ function Shows() {
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({
     name: '',
-    show_type: 'music',
     duration_minutes: 30,
     queue_order: 0,
-    talk_config_id: '',
     dj_config_id: '',
     style_ids: [],
   })
   const [allStyles, setAllStyles] = useState([])
   const [allDJConfigs, setAllDJConfigs] = useState([])
-  const [allTalkConfigs, setAllTalkConfigs] = useState([])
 
   // Filter out the system-generated live override show block
   const programBlocks = useMemo(() => {
@@ -61,14 +51,12 @@ function Shows() {
 
   async function loadModalData() {
     try {
-      const [styles, djConfigs, talkConfigs] = await Promise.allSettled([
+      const [styles, djConfigs] = await Promise.allSettled([
         fetchStyles(),
-        fetchDJConfigs(),
-        fetchTalkConfigs()
+        fetchDJConfigs()
       ])
       if (styles.status === 'fulfilled') setAllStyles(Array.isArray(styles.value) ? styles.value : [])
       if (djConfigs.status === 'fulfilled') setAllDJConfigs(Array.isArray(djConfigs.value) ? djConfigs.value : [])
-      if (talkConfigs.status === 'fulfilled') setAllTalkConfigs(Array.isArray(talkConfigs.value) ? talkConfigs.value : [])
     } catch { /* ignore */ }
   }
 
@@ -76,10 +64,8 @@ function Shows() {
     setEditing(null)
     setForm({
       name: '',
-      show_type: 'music',
       duration_minutes: 30,
       queue_order: programBlocks.length,
-      talk_config_id: '',
       dj_config_id: '',
       style_ids: []
     })
@@ -92,10 +78,8 @@ function Shows() {
     setEditing(show)
     setForm({
       name: show.name,
-      show_type: show.show_type,
       duration_minutes: show.duration_minutes,
       queue_order: show.queue_order,
-      talk_config_id: show.talk_config_id || '',
       dj_config_id: show.dj_config_id || '',
       style_ids: show.style_ids || []
     })
@@ -109,7 +93,6 @@ function Shows() {
     const payload = {
       ...form,
       duration_minutes: parseInt(form.duration_minutes) || 30,
-      talk_config_id: form.talk_config_id ? parseInt(form.talk_config_id) : null,
       dj_config_id: form.dj_config_id ? parseInt(form.dj_config_id) : null,
       style_ids: form.style_ids.length > 0 ? form.style_ids : [],
     }
@@ -220,7 +203,6 @@ function Shows() {
               <tr>
                 <th style={{ width: '80px', textAlign: 'center' }}>Order</th>
                 <th>Program Block Name</th>
-                <th>Type</th>
                 <th>Duration</th>
                 <th>Details</th>
                 <th>Status</th>
@@ -229,9 +211,7 @@ function Shows() {
             </thead>
             <tbody>
               {programBlocks.map((show, index) => {
-                const cfg = TYPE_CONFIG[show.show_type] || TYPE_CONFIG.music
                 const djc = allDJConfigs.find(c => c.id === show.dj_config_id)
-                const tc = allTalkConfigs.find(c => c.id === show.talk_config_id)
                 return (
                   <tr key={show.id} className={!show.active ? 'row-inactive' : ''}>
                     <td style={{ textAlign: 'center' }}>
@@ -261,24 +241,12 @@ function Shows() {
                       <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>{show.name}</div>
                     </td>
                     <td>
-                      <span className="show-type-badge" style={{ background: cfg.bg, color: cfg.color, padding: '2px 8px', borderRadius: '4px', fontSize: '0.75rem', fontWeight: 600 }}>
-                        {cfg.icon} {cfg.label}
-                      </span>
-                    </td>
-                    <td>
                       <span style={{ fontWeight: 600 }}>{show.duration_minutes} mins</span>
                     </td>
                     <td>
                       <div style={{ fontSize: '0.75rem', color: '#888' }}>
-                        {show.show_type !== 'talk' && (
-                          <div>DJ: {djc ? djc.name : 'Default'}</div>
-                        )}
-                        {show.show_type !== 'music' && (
-                          <div>Talk Show: {tc ? tc.name : 'None'}</div>
-                        )}
-                        {(show.show_type === 'music' || show.show_type === 'hybrid') && (
-                          <div>Styles: {show.style_ids?.length || 0} selected</div>
-                        )}
+                        <div>DJ: {djc ? djc.name : 'Default'}</div>
+                        <div>Styles: {show.style_ids?.length || 0} selected</div>
                       </div>
                     </td>
                     <td>
@@ -318,34 +286,6 @@ function Shows() {
               </div>
 
               <div className="form-group">
-                <label className="form-label">Content Type</label>
-                <div className="show-type-selector" style={{ display: 'flex', gap: '0.5rem' }}>
-                  {Object.entries(TYPE_CONFIG).map(([type, cfg]) => (
-                    <button
-                      key={type}
-                      type="button"
-                      className={`show-type-option ${form.show_type === type ? 'selected' : ''}`}
-                      style={{
-                        flex: 1,
-                        padding: '0.75rem',
-                        border: '1px solid #1e1e3a',
-                        borderRadius: '6px',
-                        borderColor: form.show_type === type ? cfg.color : '#1e1e3a',
-                        background: form.show_type === type ? cfg.bg : 'transparent',
-                        color: form.show_type === type ? cfg.color : '#888',
-                        cursor: 'pointer',
-                        fontWeight: 600
-                      }}
-                      onClick={() => setForm({...form, show_type: type})}
-                    >
-                      <span className="show-type-option-icon" style={{ marginRight: '6px' }}>{cfg.icon}</span>
-                      <span className="show-type-option-label">{cfg.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="form-group">
                 <label className="form-label">Play Duration (Minutes)</label>
                 <input
                   type="number"
@@ -359,7 +299,7 @@ function Shows() {
                 <span className="form-hint">How long this block runs before transitioning to the next block in the queue.</span>
               </div>
 
-              {(form.show_type === 'music' || form.show_type === 'hybrid') && allStyles.length > 0 && (
+              {allStyles.length > 0 && (
                 <div className="form-group">
                   <label className="form-label">Music Styles</label>
                   <div className="style-picker" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', maxHeight: '120px', overflowY: 'auto', padding: '0.5rem', background: '#090915', border: '1px solid #1e1e3a', borderRadius: '6px' }}>
@@ -393,35 +333,18 @@ function Shows() {
                 </div>
               )}
 
-              {(form.show_type === 'music' || form.show_type === 'hybrid') && (
-                <div className="form-group">
-                  <label className="form-label">DJ Personality Config</label>
-                  <select value={form.dj_config_id} onChange={e => setForm({...form, dj_config_id: e.target.value})}>
-                    <option value="">Use Station Default DJ</option>
-                    {allDJConfigs.map(c => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}{c.is_default ? ' (Default)' : ''} &mdash; {c.dj_name}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="form-hint">Optionally override the DJ persona for this show block.</span>
-                </div>
-              )}
-
-              {(form.show_type === 'talk' || form.show_type === 'hybrid') && (
-                <div className="form-group">
-                  <label className="form-label">Talk Show Config</label>
-                  <select value={form.talk_config_id} onChange={e => setForm({...form, talk_config_id: e.target.value})}>
-                    <option value="">None</option>
-                    {allTalkConfigs.map(c => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="form-hint">Select a talk config for dialogue segments.</span>
-                </div>
-              )}
+              <div className="form-group">
+                <label className="form-label">DJ Personality Config</label>
+                <select value={form.dj_config_id} onChange={e => setForm({...form, dj_config_id: e.target.value})}>
+                  <option value="">Use Station Default DJ</option>
+                  {allDJConfigs.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}{c.is_default ? ' (Default)' : ''} &mdash; {c.dj_name}
+                    </option>
+                  ))}
+                </select>
+                <span className="form-hint">Optionally override the DJ persona for this show block.</span>
+              </div>
 
               <div className="modal-actions" style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '1.5rem' }}>
                 <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>

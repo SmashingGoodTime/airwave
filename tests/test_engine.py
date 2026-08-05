@@ -18,8 +18,6 @@ from server.models.program_item import ProgramItem
 from server.models.show import Show
 from server.models.station import Station
 from server.models.style import Style
-from server.models.talk_show_config import TalkShowConfig
-from server.models.talk_topic import TalkTopic
 from server.models.track import Track
 
 from tests.conftest import MockMusicProvider, MockScriptWriterProvider, MockVoiceProvider
@@ -478,123 +476,6 @@ class TestMusicBufferManager:
         assert job.status == "failed"
         assert job.error_message == "Provider unavailable"
         assert track.status == "failed"
-
-
-class TestTalkShowEngine:
-    def _make_engine(self):
-        from server.engine.talk_show import TalkShowEngine
-
-        return TalkShowEngine()
-
-    @pytest.mark.asyncio
-    async def test_generate_segment_mirrors_timeline(
-        self, db_session, mock_voice_provider
-    ):
-        engine = self._make_engine()
-        engine._pipeline.process = AsyncMock(
-            return_value={
-                "processed_path": "audio/talks/generated.wav",
-                "duration": 60.0,
-                "loudness_lufs": -13.8,
-            }
-        )
-        config = TalkShowConfig(name="Morning Talk", host_voice_id="voice_1")
-        db_session.add(config)
-        await db_session.flush()
-        show = Show(name="Morning", show_type="talk", talk_config_id=config.id)
-        topic = TalkTopic(
-            talk_config_id=config.id,
-            title="AI News",
-            prompt="Discuss AI news.",
-            topic_type="monologue",
-        )
-        db_session.add_all([show, topic])
-        await db_session.commit()
-        await db_session.refresh(show)
-
-        scriptwriter = MagicMock()
-        scriptwriter.write_talk_segment = AsyncMock(
-            return_value={
-                "script_text": "A short talk segment.",
-                "speakers": ["Host"],
-            }
-        )
-        with patch(
-            "server.engine.talk_show.ProviderRegistry.get_instance"
-        ) as mock_reg:
-            reg = MagicMock()
-            reg.get_scriptwriter_provider.return_value = scriptwriter
-            reg.get_voice_provider.return_value = mock_voice_provider
-            mock_reg.return_value = reg
-
-            segment = await engine.generate_segment(db_session, show)
-
-        assert segment is not None
-        item = (
-            await db_session.execute(
-                select(ProgramItem).where(
-                    ProgramItem.source_table == "talk_segments",
-                    ProgramItem.source_id == segment.id,
-                )
-            )
-        ).scalar_one()
-        asset = await db_session.get(AudioAsset, item.audio_asset_id)
-
-        assert item.item_type == "talk_segment"
-        assert item.title == "monologue"
-        assert asset is not None
-        assert asset.normalized_filepath == "audio/talks/generated.wav"
-
-        job = (
-            await db_session.execute(
-                select(GenerationJob).where(
-                    GenerationJob.job_type == "generate_talk_segment"
-                )
-            )
-        ).scalar_one()
-        assert job.status == "succeeded"
-        assert job.capability == "write_talk_segment"
-        assert job.output_asset_id == asset.id
-
-    @pytest.mark.asyncio
-    async def test_generate_segment_records_failed_generation_job(self, db_session):
-        engine = self._make_engine()
-        config = TalkShowConfig(name="Morning Talk", host_voice_id="voice_1")
-        db_session.add(config)
-        await db_session.flush()
-        show = Show(name="Morning", show_type="talk", talk_config_id=config.id)
-        topic = TalkTopic(
-            talk_config_id=config.id,
-            title="AI News",
-            prompt="Discuss AI news.",
-            topic_type="monologue",
-        )
-        db_session.add_all([show, topic])
-        await db_session.commit()
-        await db_session.refresh(show)
-
-        scriptwriter = MagicMock()
-        scriptwriter.write_talk_segment = AsyncMock(side_effect=RuntimeError("talk down"))
-        with patch(
-            "server.engine.talk_show.ProviderRegistry.get_instance"
-        ) as mock_reg:
-            reg = MagicMock()
-            reg.get_scriptwriter_provider.return_value = scriptwriter
-            reg.get_voice_provider.return_value = None
-            mock_reg.return_value = reg
-
-            segment = await engine.generate_segment(db_session, show)
-
-        assert segment is None
-        job = (
-            await db_session.execute(
-                select(GenerationJob).where(
-                    GenerationJob.job_type == "generate_talk_segment"
-                )
-            )
-        ).scalar_one()
-        assert job.status == "failed"
-        assert job.error_message == "talk down"
 
 
 # ---------------------------------------------------------------------------

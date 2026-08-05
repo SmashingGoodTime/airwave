@@ -172,7 +172,6 @@ class DJBrain:
             context["is_show_intro"] = True
             if show is not None:
                 context["show_name"] = getattr(show, "name", "")
-                context["show_type"] = getattr(show, "show_type", "music")
                 context["intro_instruction"] = (
                     f"You are OPENING the show '{show.name}'. Welcome listeners, "
                     f"introduce the show by name, set the mood, and let them know "
