@@ -42,7 +42,7 @@ docker-compose --version
 
 ### API Keys (recommended)
 
-Your station uses three AI services. Each one needs an API key — a long string of characters that lets the app connect to the service. You can get all three for free, and you can add them later if you want to start exploring first.
+Your station uses three AI services. Each one needs an API key — a long string of characters that lets the app connect to the service. Google Gemini and Fish Audio both have free tiers; SunoAPI.org is credit-based and charges for music generation. You can add any of the keys later if you want to start exploring first.
 
 ---
 
@@ -51,8 +51,8 @@ Your station uses three AI services. Each one needs an API key — a long string
 ### Download the project
 
 ```bash
-git clone https://github.com/SmashingGoodTime/ai-radio-dj.git
-cd ai-radio-dj
+git clone https://github.com/SmashingGoodTime/airwave.git
+cd airwave
 ```
 
 ### Create the environment file
@@ -83,14 +83,18 @@ To use your own material, copy any MP3 or WAV files into `audio/fallback/`. Roya
 
 An API key is like a password that lets your station connect to an AI service. Here's how to get each one:
 
-### Suno (Music Generation)
+### SunoAPI.org (Music Generation)
 
-Suno creates the original music for your station.
+This is the service that generates the original music for your station.
 
-1. Go to [suno.com](https://suno.com) and create an account
-2. Navigate to your account settings or API section
-3. Generate an API key
-4. Copy the key — it looks something like `sk-suno-abc123def456...`
+> **Suno has no public API.** The music provider talks to [SunoAPI.org](https://sunoapi.org), an unofficial third-party service that resells access to Suno's models. It is not operated by or affiliated with Suno. Get this key from **sunoapi.org**, not from suno.com — a suno.com account will not work here.
+
+1. Go to [sunoapi.org](https://sunoapi.org) and create an account
+2. Open the [API Key page](https://sunoapi.org/api-key)
+3. Create a key and copy it — the app sends it as a Bearer token
+4. Add credits to your account. SunoAPI.org is credit-based, and generation is billed per request
+
+Because it is a third-party bridge, pricing, model availability, and uptime are outside this project's control and can change without notice. The music provider is swappable if you would rather use a different service — see [Adding Providers](adding-providers.md).
 
 ### Google Gemini (DJ Script Writing)
 
@@ -118,7 +122,7 @@ You have two options:
 Open `.env` in any text editor and paste your keys:
 
 ```env
-SUNO_API_KEY=your_suno_key_here
+SUNO_API_KEY=your_sunoapi_org_key_here
 GOOGLE_API_KEY=your_google_ai_key_here
 FISH_AUDIO_API_KEY=your_fish_audio_key_here
 ```
@@ -144,7 +148,7 @@ ICECAST_ADMIN_PASSWORD=hackme
 HARBOR_SOURCE_PASSWORD=hackme
 ```
 
-> **Important:** If anyone outside your local network will access your station, change all passwords from `hackme` to something secure. Also note that the control API on port 8000 has no authentication — see the [Security section in the README](../README.md#13-security).
+> **Important:** If anyone outside your local network will access your station, change all passwords from `hackme` to something secure. Also note that the control API on port 8000 has no authentication — see the [Security section in the README](../README.md#11-security).
 
 For a complete list of every setting, see the [Configuration Reference](configuration.md).
 
@@ -159,7 +163,7 @@ docker-compose up
 You'll see logs from three services starting up:
 
 ```
-app-1         | AI Radio DJ backend ready
+app-1         | Airwave backend ready
 liquidsoap-1  | Ready!
 icecast-1     | Listening on port 8080
 ```
@@ -242,7 +246,7 @@ Once you finish setup, the station operates autonomously. Here's what happens be
 1. The **buffer manager** checks how many tracks are ready to play
 2. If the queue is below the target (default: 5 tracks), it picks a music style
 3. Style selection considers: weights (higher = more likely), time-of-day schedule, and recent history (avoids repeating the same style)
-4. The style description is sent to **Suno**, which generates a full song
+4. The style description is sent to **SunoAPI.org**, which generates a full song with Suno's model
 5. The song is **normalized** to consistent volume (-14 LUFS) and converted to a standard format
 6. The track enters the **ready queue**
 
@@ -326,7 +330,7 @@ docker-compose logs -f app    # Just the main app
 
 1. Check the **Music Queue** on the dashboard — is it at 0?
 2. Check **AI Services** — is Music Generation showing "Connected"?
-3. Verify your Suno API key is correct
+3. Verify your SunoAPI.org API key is correct and that the account still has credits — the music provider reports as unavailable when the balance hits zero
 4. Check the logs: `docker-compose logs app | tail -50`
 5. Music generation takes 1-3 minutes per track. A brand new station needs a few minutes to build up its queue.
 
@@ -338,7 +342,7 @@ docker-compose logs -f app    # Just the main app
 
 ### "I hear the same fallback audio on repeat"
 
-This means the music queue is empty and no new tracks are being generated. Most likely cause: missing or invalid Suno API key. Check `docker-compose logs app` for error messages.
+This means the music queue is empty and no new tracks are being generated. Most likely cause: a missing or invalid SunoAPI.org API key, or an account that has run out of credits. Check `docker-compose logs app` for error messages.
 
 ### "The stream URL doesn't work"
 
@@ -365,4 +369,4 @@ Now that your station is running:
 
 - **[Configuration Reference](configuration.md)** — Fine-tune every setting: buffer sizes, retention periods, audio quality, rate limits, and more
 - **[Adding Providers](adding-providers.md)** — For developers: how to add new AI services or build custom integrations
-- **[Contributing](../CONTRIBUTING.md)** — Help improve AI Radio DJ
+- **[Contributing](../CONTRIBUTING.md)** — Help improve Airwave

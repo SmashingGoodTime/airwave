@@ -1,4 +1,4 @@
-# Contributing to AI Radio DJ
+# Contributing to Airwave
 
 Thanks for your interest in contributing! This guide covers everything you need to get started.
 
@@ -16,8 +16,8 @@ Thanks for your interest in contributing! This guide covers everything you need 
 1. **Clone and install Python dependencies:**
 
    ```bash
-   git clone https://github.com/SmashingGoodTime/ai-radio-dj.git
-   cd ai-radio-dj
+   git clone https://github.com/SmashingGoodTime/airwave.git
+   cd airwave
    pip install -r requirements-dev.txt
    ```
 

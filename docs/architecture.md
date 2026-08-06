@@ -1,6 +1,6 @@
 # Architecture Direction
 
-AI Radio DJ is being shaped as a broadcast automation system first and an AI
+Airwave is being shaped as a broadcast automation system first and an AI
 content generator second. The current music buffer, DJ brain, and scheduler
 continue to run as they do today, while new shared foundations are added
 underneath them.

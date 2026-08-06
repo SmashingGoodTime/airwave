@@ -187,7 +187,7 @@ function Setup({ onComplete }) {
           <div>
             <h2>Welcome! Let's set up your radio station.</h2>
             <p className="step-description">
-              AI Radio DJ creates an entire radio station powered by artificial intelligence.
+              Airwave creates an entire radio station powered by artificial intelligence.
               It generates original music, writes DJ scripts, and broadcasts everything
               as a continuous live stream. Let's get yours started.
             </p>
@@ -520,7 +520,7 @@ function Setup({ onComplete }) {
   return (
     <div className="setup-container">
       <div className="setup-header">
-        <h1>AI Radio DJ</h1>
+        <h1>Airwave</h1>
         <p>Your own AI-powered radio station in minutes.</p>
       </div>
 

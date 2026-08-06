@@ -1,8 +1,8 @@
-# AI Radio DJ — AGENTS.md
+# Airwave — AGENTS.md
 
 ## Project Overview
 
-AI Radio DJ is an open-source, self-contained automated radio station powered by AI. It generates music, writes and voices DJ breaks, manages announcements, and streams everything as a continuous broadcast — all from a single `docker-compose up` command.
+Airwave is an open-source, self-contained automated radio station powered by AI. It generates music, writes and voices DJ breaks, manages announcements, and streams everything as a continuous broadcast — all from a single `docker-compose up` command.
 
 The system is designed so that **any radio station** can run it with minimal setup. A first-run setup wizard walks operators through configuration. No editing config files required to get started.
 
@@ -75,7 +75,7 @@ New providers are added by:
 |---|---|
 | Backend | Python 3.11+, FastAPI, SQLAlchemy (SQLite), APScheduler |
 | Frontend | React (Vite), served as static build by FastAPI |
-| Music Generation | Suno API (default provider) |
+| Music Generation | SunoAPI.org (default provider) — an unofficial third-party bridge to Suno's models; Suno has no public API |
 | DJ Script Writing | Google Gemini API (default provider) |
 | TTS / DJ Voice | Fish Audio API (default provider) |
 | Audio Processing | FFmpeg, pydub |
@@ -88,7 +88,7 @@ New providers are added by:
 ## Project Structure
 
 ```
-ai-radio-dj/
+airwave/
 ├── docker-compose.yml
 ├── Dockerfile
 ├── .env.example

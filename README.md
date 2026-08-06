@@ -1,8 +1,6 @@
-# AI Radio DJ
+# Airwave
 
 An AI-powered radio station that runs itself. It creates original music, writes DJ scripts, speaks them in a realistic voice, and streams everything live — all from one command.
-
-(**Listener Call-in** — real callers talking to your AI host on air — is on the roadmap; see [Listener Call-in](#7-listener-call-in-roadmap).)
 
 No music library needed. No recording equipment. No experience required.
 
@@ -16,20 +14,19 @@ No music library needed. No recording equipment. No experience required.
 4. [Getting Started](#4-getting-started)
 5. [The Setup Wizard](#5-the-setup-wizard)
 6. [Using Your Station](#6-using-your-station)
-7. [Listener Call-in (Roadmap)](#7-listener-call-in-roadmap)
-8. [Development Setup](#8-development-setup)
-9. [Project Structure](#9-project-structure)
-10. [API Reference](#10-api-reference)
-11. [Tech Stack](#11-tech-stack)
-12. [Security](#12-security)
-14. [Further Reading](#14-further-reading)
-15. [License](#15-license)
+7. [Development Setup](#7-development-setup)
+8. [Project Structure](#8-project-structure)
+9. [API Reference](#9-api-reference)
+10. [Tech Stack](#10-tech-stack)
+11. [Security](#11-security)
+12. [Further Reading](#12-further-reading)
+13. [License](#13-license)
 
 ---
 
 ## 1. What Is This?
 
-AI Radio DJ is a complete, self-running radio station powered by artificial intelligence. Once you set it up, it:
+Airwave is a complete, self-running radio station powered by artificial intelligence. Once you set it up, it:
 
 - **Creates original music** from text descriptions you provide (e.g., "relaxing lo-fi hip hop with piano")
 - **Writes DJ scripts** — natural, conversational breaks between songs
@@ -74,7 +71,7 @@ Behind the scenes:
 
 | Service | What It Does | Default Provider |
 |---------|-------------|-----------------|
-| Music Generation | Creates original songs from your style descriptions | [Suno](https://suno.com) |
+| Music Generation | Creates original songs from your style descriptions | [SunoAPI.org](https://sunoapi.org) (unofficial Suno bridge) |
 | Script Writing | Writes the DJ scripts between songs | [Google Gemini](https://aistudio.google.com) |
 | DJ Voice | Speaks the DJ scripts in a realistic voice | [Fish Audio](https://fish.audio) |
 
@@ -88,11 +85,13 @@ Behind the scenes:
 
 ### Recommended (for full functionality)
 
-- **A Suno account** — For music generation. [Sign up at suno.com](https://suno.com)
+- **A SunoAPI.org account** — For music generation. [Sign up at sunoapi.org](https://sunoapi.org)
 - **A Google AI Studio account** — For DJ script writing. [Sign up at aistudio.google.com](https://aistudio.google.com)
 - **A Fish Audio account** — For the DJ's voice. [Sign up at fish.audio](https://fish.audio)
 
-Each service has a free tier you can start with. You'll need an **API key** from each one — the setup wizard will show you exactly where to find them.
+You'll need an **API key** from each one — the setup wizard will show you exactly where to find them. Google AI Studio and Fish Audio both have free tiers you can start on; SunoAPI.org is credit-based, so music generation costs money from the first track.
+
+> **About music generation:** Suno does not currently offer a public API. This project talks to **[SunoAPI.org](https://sunoapi.org)**, an unofficial third-party service that resells access to Suno's models — it is not operated by or affiliated with Suno. That means your music key comes from sunoapi.org, not from suno.com, and the usual third-party caveats apply: pricing, model availability, and uptime are outside this project's control, and they can change without notice. If Suno ships an official API, or you would rather use a different music service, the music provider is swappable — see [Adding Providers](docs/adding-providers.md).
 
 > **Don't have API keys yet?** That's fine. You can start the station without them and add keys later through the settings page. The station just won't generate content until at least the music key is added.
 
@@ -103,8 +102,8 @@ Each service has a free tier you can start with. You'll need an **API key** from
 ### Step 1: Download the project
 
 ```bash
-git clone https://github.com/SmashingGoodTime/ai-radio-dj.git
-cd ai-radio-dj
+git clone https://github.com/SmashingGoodTime/airwave.git
+cd airwave
 ```
 
 ### Step 2: Create your environment file
@@ -115,7 +114,7 @@ cp .env.example .env
 
 This step is **required** — Docker Compose mounts `.env` into the app container so API keys entered through the setup wizard are saved back to it. You can edit `.env` to add API keys now, or enter them through the setup wizard instead.
 
-While you're here, change the `ICECAST_SOURCE_PASSWORD`, `ICECAST_ADMIN_PASSWORD`, and `HARBOR_SOURCE_PASSWORD` values from their `hackme` defaults (see [Security](#13-security)).
+While you're here, change the `ICECAST_SOURCE_PASSWORD`, `ICECAST_ADMIN_PASSWORD`, and `HARBOR_SOURCE_PASSWORD` values from their `hackme` defaults (see [Security](#11-security)).
 
 ### Step 3: Create the data directory
 
@@ -141,7 +140,7 @@ This starts three services:
 | **Liquidsoap** | Audio mixing and playout | (internal) |
 | **Icecast** | Live stream server | http://localhost:8080/stream |
 
-Wait for the log message: `AI Radio DJ backend ready`
+Wait for the log message: `Airwave backend ready`
 
 ### Step 5: Open the setup wizard
 
@@ -251,15 +250,7 @@ Next time you run `docker-compose up`, everything picks up where it left off —
 
 ---
 
-## 7. Listener Call-in (Roadmap)
-
-> **Not yet implemented.** Listener call-in is a planned feature — it is **not** in the current codebase. There is no Calls page, no `/api/calls/*` endpoints, and no Twilio or OpenAI integration yet.
-
-The plan: let real listeners call a phone number (via Twilio) and talk to an AI host (via a realtime conversation API), either live on air or pre-recorded, screened, and played back later. Some groundwork already exists — the Liquidsoap config includes a harbor input reserved for live caller audio — but the call manager, telephony provider, and conversation AI are not built.
-
----
-
-## 8. Development Setup
+## 7. Development Setup
 
 If you want to modify the code or run without Docker:
 
@@ -297,10 +288,10 @@ The built files go to `frontend/dist/` and are served by FastAPI automatically.
 
 ---
 
-## 9. Project Structure
+## 8. Project Structure
 
 ```
-ai-radio-dj/
+airwave/
 ├── server/                      # Python backend
 │   ├── main.py                  # App entry point
 │   ├── config.py                # Settings from .env
@@ -337,7 +328,7 @@ ai-radio-dj/
 
 ---
 
-## 10. API Reference
+## 9. API Reference
 
 All endpoints are under `/api/`. The web dashboard uses these same endpoints.
 
@@ -382,13 +373,13 @@ All endpoints are under `/api/`. The web dashboard uses these same endpoints.
 
 ---
 
-## 11. Tech Stack
+## 10. Tech Stack
 
 | What | Technology |
 |------|-----------|
 | Backend | Python 3.11+, FastAPI, SQLAlchemy, SQLite |
 | Frontend | React 18, Vite |
-| Music AI | Suno API |
+| Music AI | SunoAPI.org (unofficial Suno bridge) |
 | Script AI | Google Gemini API |
 | Voice AI | Fish Audio API |
 | Audio Processing | FFmpeg |
@@ -398,7 +389,7 @@ All endpoints are under `/api/`. The web dashboard uses these same endpoints.
 
 ---
 
-## 12. Security
+## 11. Security
 
 A few things to know before running the station anywhere other than your own machine:
 
@@ -409,7 +400,7 @@ A few things to know before running the station anywhere other than your own mac
 
 ---
 
-## 14. Further Reading
+## 12. Further Reading
 
 - **[Getting Started Guide](docs/quickstart.md)** — Detailed walkthrough from zero to a running station
 - **[Configuration Reference](docs/configuration.md)** — Every setting explained
@@ -419,6 +410,6 @@ A few things to know before running the station anywhere other than your own mac
 
 ---
 
-## 15. License
+## 13. License
 
 MIT — Use it however you like.

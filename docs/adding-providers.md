@@ -1,6 +1,6 @@
 # Adding Providers
 
-How to add new AI services or custom integrations to AI Radio DJ. This guide is for developers who want to swap in a different music API, voice service, or script writer.
+How to add new AI services or custom integrations to Airwave. This guide is for developers who want to swap in a different music API, voice service, or script writer.
 
 ---
 
@@ -19,7 +19,7 @@ How to add new AI services or custom integrations to AI Radio DJ. This guide is 
 
 ## 1. How Providers Work
 
-AI Radio DJ uses a plugin architecture. The engine (scheduler, buffer manager, DJ brain) never talks directly to concrete services such as Suno, Gemini, or Fish Audio. Instead, it talks to abstract interfaces, and a **provider registry** decides which concrete implementation to use based on your configuration.
+Airwave uses a plugin architecture. The engine (scheduler, buffer manager, DJ brain) never talks directly to concrete services such as Suno, Gemini, or Fish Audio. Instead, it talks to abstract interfaces, and a **provider registry** decides which concrete implementation to use based on your configuration.
 
 ```
 Engine Code  -->  Abstract Interface  -->  Provider Registry  -->  Concrete Provider

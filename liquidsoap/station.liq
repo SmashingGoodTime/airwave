@@ -1,4 +1,4 @@
-# AI Radio DJ - Liquidsoap Station Configuration
+# Airwave - Liquidsoap Station Configuration
 # Liquidsoap v2.2.x
 
 # =====================
@@ -19,7 +19,7 @@ settings.log.level.set(3)
 icecast_password = environment.get(default="hackme", "ICECAST_SOURCE_PASSWORD")
 # Deliberately NOT "hackme": if the compose env var is absent, the harbor
 # must not accept the well-known Liquidsoap default password.
-harbor_password = environment.get(default="airadio-caller-secret", "HARBOR_SOURCE_PASSWORD")
+harbor_password = environment.get(default="airwave-caller-secret", "HARBOR_SOURCE_PASSWORD")
 
 # =====================
 # Request Queue
@@ -253,7 +253,7 @@ output.icecast(
   port=8080,
   password=icecast_password,
   mount="/stream",
-  name="AI Radio DJ",
+  name="Airwave",
   description="AI-powered radio station",
   genre="Various",
   url="",

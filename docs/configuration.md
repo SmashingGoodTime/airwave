@@ -1,6 +1,6 @@
 # Configuration Reference
 
-Every setting in AI Radio DJ, explained. Most settings have sensible defaults and don't need to be changed.
+Every setting in Airwave, explained. Most settings have sensible defaults and don't need to be changed.
 
 ---
 
@@ -23,7 +23,7 @@ Every setting in AI Radio DJ, explained. Most settings have sensible defaults an
 
 ## 1. Where Settings Live
 
-AI Radio DJ has two types of settings:
+Airwave has two types of settings:
 
 | Type | Where | How to Change |
 |------|-------|--------------|
@@ -52,14 +52,16 @@ These are set in the `.env` file at the project root. Changes require restarting
 
 | Variable | Default | What It Does |
 |----------|---------|-------------|
-| `SUNO_API_KEY` | *(empty)* | Key for Suno music generation. Without this, no music is created. |
-| `SUNO_MODEL` | `V5_5` | Suno model version used for music generation. Options: `V4`, `V4_5`, `V4_5PLUS`, `V4_5ALL`, `V5`, `V5_5`. |
+| `SUNO_API_KEY` | *(empty)* | Key for music generation, issued by [SunoAPI.org](https://sunoapi.org/api-key) — **not** a suno.com credential. Without this, no music is created. |
+| `SUNO_MODEL` | `V5_5` | Suno model version used for music generation. Options: `V4`, `V4_5`, `V4_5PLUS`, `V4_5ALL`, `V5`, `V5_5`. Availability depends on what SunoAPI.org currently exposes. |
 | `GOOGLE_API_KEY` | *(empty)* | Key for Google Gemini script writing. Without this, no DJ scripts are written. |
 | `GEMINI_MODEL` | `gemini-3.6-flash` | Gemini model used for script writing. Set `gemini-3.5-flash-lite` to cut cost on high break volume. |
 | `FISH_AUDIO_API_KEY` | *(empty)* | Key for Fish Audio voice rendering. Without this, DJ scripts aren't spoken aloud. |
 | `FISH_AUDIO_MODEL` | `s2.1-pro` | Fish Audio TTS model. Options: `s2.1-pro` (recommended), `s2.1-pro-free`, `s2-pro`, `s1`. Voice IDs work identically across the S2 family, so switching models does not change your DJ voice. |
 
 All keys are optional. The station starts without them but won't generate content until they're provided. You can enter keys through the setup wizard instead of editing `.env`.
+
+> **On the music key:** Suno does not currently publish a public API. The bundled music provider therefore talks to **[SunoAPI.org](https://sunoapi.org)**, an unofficial third-party service that resells access to Suno's models and is not affiliated with Suno. It is credit-based, and the provider's health check reports the music service as unavailable once the credit balance reaches zero. Since it is a third-party bridge, its pricing, model list, and uptime can change without notice; the music provider is swappable if you would rather use something else — see [Adding Providers](adding-providers.md).
 
 ### Liquidsoap Connection
 
@@ -231,7 +233,7 @@ Each AI provider has built-in rate limiting to avoid being throttled or banned:
 
 | Provider | Max Calls/Min | Min Time Between Calls | Retries | Max Backoff |
 |----------|:------------:|:---------------------:|:-------:|:----------:|
-| **Suno** (Music) | 5 | 15 seconds | 2 | 2 minutes |
+| **SunoAPI.org** (Music) | 2 | 30 seconds | 2 | 2 minutes |
 | **Gemini** (Scripts) | 15 | 4 seconds | 2 | 30 seconds |
 | **Fish Audio** (Voice) | 10 | 2 seconds | 2 | 1 minute |
 

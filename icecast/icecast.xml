@@ -1,5 +1,5 @@
 <icecast>
-    <location>AI Radio DJ</location>
+    <location>Airwave</location>
     <admin>admin@localhost</admin>
 
     <limits>
@@ -39,7 +39,7 @@
     <mount type="normal">
         <mount-name>/stream</mount-name>
         <charset>UTF-8</charset>
-        <stream-name>AI Radio DJ</stream-name>
+        <stream-name>Airwave</stream-name>
         <stream-description>AI-powered radio station</stream-description>
         <genre>Various</genre>
         <public>0</public>

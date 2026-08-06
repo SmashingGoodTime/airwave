@@ -97,7 +97,7 @@ function App() {
     return (
       <div className="loading-screen">
         <div className="loading-spinner" />
-        <p>Loading AI Radio DJ...</p>
+        <p>Loading Airwave...</p>
       </div>
     )
   }
@@ -128,7 +128,7 @@ function App() {
           <aside className={`sidebar ${mobileMenuOpen ? 'sidebar-open' : ''}`}>
             <div className="sidebar-brand">
               <span className="brand-icon">&#9835;</span>
-              <h1>AI Radio DJ</h1>
+              <h1>Airwave</h1>
             </div>
             <nav>
               <NavLink to="/dashboard" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>

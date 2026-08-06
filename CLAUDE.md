@@ -1,4 +1,4 @@
-# AI Radio DJ — CLAUDE.md
+# Airwave — CLAUDE.md
 
 The project guidance for this repository lives in **[AGENTS.md](AGENTS.md)**.
 

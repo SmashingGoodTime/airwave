@@ -25,7 +25,7 @@ var DEMO_LYRICS = [
   'This is our sound, this is our choice',
 ].join('\n')
 
-var DEMO_SCRIPT = "Hey there, beautiful people! You\'re locked in with AI Radio DJ, your nonstop source for fresh AI-generated beats. That last track was something special, wasn\'t it? We\'ve got plenty more coming your way. Stay tuned, stay groovy, and remember — the future sounds amazing."
+var DEMO_SCRIPT = "Hey there, beautiful people! You\'re locked in with Airwave, your nonstop source for fresh AI-generated beats. That last track was something special, wasn\'t it? We\'ve got plenty more coming your way. Stay tuned, stay groovy, and remember — the future sounds amazing."
 
 const COLORS = {
   primary: '#e94560',
@@ -414,7 +414,7 @@ function NowPlayingOverlay({ trackInfo }) {
 function StationBranding({ stationName, djName }) {
   return (
     <div className="viz-branding">
-      <div className="viz-brand-name">{stationName || 'AI Radio DJ'}</div>
+      <div className="viz-brand-name">{stationName || 'Airwave'}</div>
       {djName && <div className="viz-brand-dj">with {djName}</div>}
       <div className="viz-brand-live">
         <span className="viz-live-dot" />

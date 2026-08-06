@@ -1,4 +1,4 @@
-"""FastAPI application entry point for the AI Radio DJ backend."""
+"""FastAPI application entry point for the Airwave backend."""
 
 import server._platform_fix  # noqa: F401 — must be first, fixes WMI hang on Win/Py3.13
 
@@ -88,7 +88,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Yields:
         Control back to the application after startup tasks complete.
     """
-    logger.info("Starting AI Radio DJ backend...")
+    logger.info("Starting Airwave backend...")
 
     # Initialize database
     try:
@@ -138,10 +138,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:
         logger.error("Scheduler startup failed: %s", exc)
 
-    logger.info("AI Radio DJ backend ready")
+    logger.info("Airwave backend ready")
     yield
 
-    logger.info("Shutting down AI Radio DJ backend...")
+    logger.info("Shutting down Airwave backend...")
     try:
         await scheduler.stop()
     except Exception as exc:
@@ -149,7 +149,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutdown complete")
 
 
-app = FastAPI(title="AI Radio DJ", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Airwave", version="0.1.0", lifespan=lifespan)
 
 # The SPA is served same-origin, so CORS only matters for local dev setups.
 # Credentials stay disabled because the write API is unauthenticated.

@@ -1,4 +1,4 @@
-"""Alembic environment for AI Radio DJ migrations."""
+"""Alembic environment for Airwave migrations."""
 
 from __future__ import annotations
 

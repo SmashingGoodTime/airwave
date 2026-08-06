@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models for the AI Radio DJ application."""
+"""SQLAlchemy ORM models for the Airwave application."""
 
 from server.models.announcement import Announcement
 from server.models.audio_asset import AudioAsset
