@@ -1,5 +1,5 @@
 # Stage 1: Build frontend
-FROM node:20-slim AS frontend-build
+FROM node:22-slim AS frontend-build
 WORKDIR /app/frontend
 # Copy manifests first so the npm ci layer is cached across source changes
 COPY frontend/package*.json ./
@@ -29,9 +29,10 @@ COPY server/ server/
 COPY --from=frontend-build /app/frontend/dist frontend/dist
 
 # Run as non-root. UID 1000 matches the default first user on most Linux
-# hosts so the bind-mounted ./audio and ./data directories stay writable.
-# /data holds the SQLite database (see docker-compose.yml); /app/audio is
-# the generated-audio volume; /app itself must be writable for the
+# hosts so the bind-mounted ./audio directory stays writable. /data holds
+# the SQLite database on the named "radio-data" volume, which inherits this
+# mountpoint's ownership (see docker-compose.yml); /app/audio is the
+# generated-audio volume; /app itself must be writable for the
 # wizard-managed .env file.
 RUN useradd --uid 1000 --user-group --no-create-home radio && \
     mkdir -p /data /app/audio && \
