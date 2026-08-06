@@ -19,10 +19,13 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: str = ""
     # Gemini model id used by the scriptwriter provider. Override in .env
     # if this default is unavailable on your API tier.
-    GEMINI_MODEL: str = "gemini-3.5-flash"
+    GEMINI_MODEL: str = "gemini-3.6-flash"
     SUNO_API_KEY: str = ""
     SUNO_MODEL: str = "V5_5"
     FISH_AUDIO_API_KEY: str = ""
+    # Fish Audio TTS model id. s2.1-pro is the vendor-recommended production
+    # model; s2.1-pro-free trades throughput for no per-character billing.
+    FISH_AUDIO_MODEL: str = "s2.1-pro"
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     LOG_LEVEL: str = "INFO"

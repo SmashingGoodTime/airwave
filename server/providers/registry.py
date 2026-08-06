@@ -121,6 +121,18 @@ def _gemini_factory(ctx: ProviderFactoryContext) -> ProviderInstance:
     return ctx.provider_cls(**kwargs)
 
 
+def _fish_factory(ctx: ProviderFactoryContext) -> ProviderInstance:
+    """Build a Fish Audio voice provider with a configurable model."""
+    kwargs = {
+        "api_key": ctx.value("FISH_AUDIO_API_KEY"),
+        "audio_dir": ctx.audio_dir,
+    }
+    model = ctx.value("FISH_AUDIO_MODEL")
+    if model:
+        kwargs["model"] = model
+    return ctx.provider_cls(**kwargs)
+
+
 BUILTIN_PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
     ProviderDefinition(
         key="suno",
@@ -147,7 +159,7 @@ BUILTIN_PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         module_path="server.providers.voice.fish",
         class_name="FishAudioVoiceProvider",
         required_env=("FISH_AUDIO_API_KEY",),
-        factory=_api_key_provider("FISH_AUDIO_API_KEY", include_audio_dir=True),
+        factory=_fish_factory,
     ),
 )
 

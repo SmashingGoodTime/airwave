@@ -16,7 +16,7 @@ from server.utils.rate_limiter import (
 logger = logging.getLogger(__name__)
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
-DEFAULT_MODEL = "gemini-3.5-flash"
+DEFAULT_MODEL = "gemini-3.6-flash"
 
 DEFAULT_SYSTEM_PROMPT = """You are a radio DJ. Write short, punchy DJ breaks.
 Be brief — a few sentences at most. Get in, say something fun, get out.

@@ -1,8 +1,8 @@
 """Fish Audio TTS voice provider with rate limiting and retry.
 
 Uses the Fish Audio API (https://docs.fish.audio) to render DJ scripts
-to audio. Supports the s1 and s2-pro models, voice cloning via
-reference_id, and WAV output.
+to audio. Supports the s1, s2-pro and s2.1-pro models, voice cloning
+via reference_id, and WAV output.
 
 See: https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech
 """
@@ -25,7 +25,7 @@ from server.utils.rate_limiter import (
 logger = logging.getLogger(__name__)
 
 FISH_API_BASE = "https://api.fish.audio"
-DEFAULT_MODEL = "s2-pro"
+DEFAULT_MODEL = "s2.1-pro"
 
 # Curated radio-style voices from Fish Audio
 FISH_VOICES = [
@@ -170,7 +170,7 @@ class FishAudioVoiceProvider(VoiceProvider):
     Args:
         api_key: Fish Audio API key.
         audio_dir: Directory to save rendered audio files.
-        model: Fish Audio model name (s1 or s2-pro).
+        model: Fish Audio model name (s1, s2-pro or s2.1-pro).
     """
 
     def __init__(

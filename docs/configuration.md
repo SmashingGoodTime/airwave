@@ -53,9 +53,11 @@ These are set in the `.env` file at the project root. Changes require restarting
 | Variable | Default | What It Does |
 |----------|---------|-------------|
 | `SUNO_API_KEY` | *(empty)* | Key for Suno music generation. Without this, no music is created. |
+| `SUNO_MODEL` | `V5_5` | Suno model version used for music generation. Options: `V4`, `V4_5`, `V4_5PLUS`, `V4_5ALL`, `V5`, `V5_5`. |
 | `GOOGLE_API_KEY` | *(empty)* | Key for Google Gemini script writing. Without this, no DJ scripts are written. |
-| `GEMINI_MODEL` | `gemini-3.5-flash` | Gemini model used for script writing. |
+| `GEMINI_MODEL` | `gemini-3.6-flash` | Gemini model used for script writing. Set `gemini-3.5-flash-lite` to cut cost on high break volume. |
 | `FISH_AUDIO_API_KEY` | *(empty)* | Key for Fish Audio voice rendering. Without this, DJ scripts aren't spoken aloud. |
+| `FISH_AUDIO_MODEL` | `s2.1-pro` | Fish Audio TTS model. Options: `s2.1-pro` (recommended), `s2.1-pro-free`, `s2-pro`, `s1`. Voice IDs work identically across the S2 family, so switching models does not change your DJ voice. |
 
 All keys are optional. The station starts without them but won't generate content until they're provided. You can enter keys through the setup wizard instead of editing `.env`.
 
