@@ -1,12 +1,13 @@
 """Program timeline item model for station playout planning."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from server.database import Base
+from server.utils.timeutils import utcnow_naive
 
 
 class ProgramItem(Base):
@@ -40,11 +41,7 @@ class ProgramItem(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     duration: Mapped[float | None] = mapped_column(Float, nullable=True)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc)
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        DateTime, default=utcnow_naive, onupdate=utcnow_naive
     )

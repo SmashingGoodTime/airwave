@@ -1,11 +1,12 @@
 """Audio asset model for immutable normalized audio metadata."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from server.database import Base
+from server.utils.timeutils import utcnow_naive
 
 
 class AudioAsset(Base):
@@ -29,6 +30,4 @@ class AudioAsset(Base):
     provider: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="ready")
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc)
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)

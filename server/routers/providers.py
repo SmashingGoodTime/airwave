@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from server.providers.registry import sanitize_provider_error
 from server.utils.env import update_env_file
 
 logger = logging.getLogger(__name__)
@@ -264,11 +265,16 @@ async def test_provider(
             error=None if healthy else "Provider reported unhealthy",
         )
     except Exception as exc:
-        logger.warning("Provider test failed for %s: %s", provider_name, exc)
+        logger.warning(
+            "Provider test failed for %s: %s",
+            provider_name,
+            sanitize_provider_error(exc),
+        )
         return ProviderTestResult(
             provider=provider_name,
             healthy=False,
             status="error",
             tested_candidate=False,
-            error=str(exc),
+            # Sanitized: raw httpx messages can embed request URLs.
+            error=sanitize_provider_error(exc),
         )

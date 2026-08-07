@@ -1,11 +1,12 @@
 """DJ configuration model for station personality settings."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from server.database import Base
+from server.utils.timeutils import utcnow_naive
 
 
 class DJConfig(Base):
@@ -35,7 +36,5 @@ class DJConfig(Base):
     content_policy_suffix: Mapped[str | None] = mapped_column(Text, nullable=True)
     max_break_duration: Mapped[int] = mapped_column(Integer, default=60)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        DateTime, default=utcnow_naive, onupdate=utcnow_naive
     )

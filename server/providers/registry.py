@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Optional
 
+from server.events.emitter import event_bus
 from server.providers.base import (
     MusicProvider,
     ScriptWriterProvider,
@@ -81,7 +82,7 @@ def _api_key_provider(env_name: str, *, include_audio_dir: bool) -> ProviderFact
     return _factory
 
 
-def _sanitize_error(exc: Exception) -> str:
+def sanitize_provider_error(exc: Exception) -> str:
     """Build an error string safe to log and return to browsers.
 
     Never includes URLs or query strings, which can carry API keys
@@ -190,6 +191,10 @@ class ProviderRegistry:
         self._provider_names: dict[str, str] = {}
         self._health_cache: dict = {}
         self._health_cache_time: float = 0.0
+        # Last observed healthy state per capability, kept across cache
+        # clears and reinitialization so an unhealthy -> healthy transition
+        # (including "operator fixed the API key") emits provider.recovered.
+        self._last_health_state: dict[str, bool] = {}
 
     @classmethod
     def get_instance(cls) -> ProviderRegistry:
@@ -308,13 +313,13 @@ class ProviderRegistry:
                     "Candidate health check failed for %s provider %s: %s",
                     capability,
                     definition.display_name,
-                    _sanitize_error(exc),
+                    sanitize_provider_error(exc),
                 )
                 return {
                     "provider": definition.key,
                     "healthy": False,
                     "status": "error",
-                    "error": _sanitize_error(exc),
+                    "error": sanitize_provider_error(exc),
                 }
             finally:
                 # The throwaway candidate provider is never registered, so
@@ -484,14 +489,25 @@ class ProviderRegistry:
                     logger.warning(
                         "Health check failed for %s: %s",
                         name,
-                        _sanitize_error(exc),
+                        sanitize_provider_error(exc),
                     )
                     results[name] = {
                         "status": "error",
                         "healthy": False,
                         "provider": key,
-                        "error": _sanitize_error(exc),
+                        "error": sanitize_provider_error(exc),
                     }
+
+        # Emit recovery events on unhealthy -> healthy transitions so
+        # dashboards and custom handlers hear about providers coming back.
+        for name, result in results.items():
+            healthy = bool(result.get("healthy"))
+            if self._last_health_state.get(name) is False and healthy:
+                event_bus.emit(
+                    "provider.recovered",
+                    {"provider": name, "key": result.get("provider")},
+                )
+            self._last_health_state[name] = healthy
 
         self._health_cache = results
         self._health_cache_time = now

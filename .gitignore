@@ -36,8 +36,11 @@ audio/talks/*
 audio/calls/*
 audio/recordings/*
 !audio/fallback/
-# Generated cache of loudness-normalized fallback copies (created at runtime)
-audio/fallback/normalized/
+# Generated cache of loudness-normalized fallback copies (created at runtime).
+# Contents only — the directory itself stays tracked via .gitkeep so
+# Liquidsoap can watch it from first boot, before the app creates anything.
+audio/fallback/normalized/*
+!audio/fallback/normalized/.gitkeep
 
 # Test / tooling caches
 .pytest_cache/

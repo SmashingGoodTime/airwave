@@ -58,6 +58,12 @@ class MusicBufferManager:
     def __init__(self) -> None:
         self._pipeline = AudioPipeline()
         self._generating = False
+        # Edge-trigger state: last emitted buffer level and whether the
+        # missing-provider/style warnings have already been logged, so the
+        # 30s loop doesn't spam events and logs with an unchanged condition.
+        self._last_buffer_state: str | None = None
+        self._warned_no_provider = False
+        self._warned_no_styles = False
 
     async def check_and_fill(
         self, session: AsyncSession, show_id: int | None = None
@@ -85,11 +91,26 @@ class MusicBufferManager:
 
         logger.debug("Buffer: %d/%d ready tracks", ready_count, buffer_target)
 
-        # Emit buffer warnings
+        # Emit buffer warnings on level *transitions* only — the loop runs
+        # every 30s and an unchanged empty buffer must not re-alert forever.
         if ready_count <= 0:
-            event_bus.emit("buffer.critical", {"ready": ready_count, "target": buffer_target})
+            buffer_state = "critical"
         elif ready_count <= buffer_warning:
-            event_bus.emit("buffer.low", {"ready": ready_count, "target": buffer_target})
+            buffer_state = "low"
+        else:
+            buffer_state = "ok"
+        if buffer_state != self._last_buffer_state:
+            self._last_buffer_state = buffer_state
+            if buffer_state == "critical":
+                event_bus.emit(
+                    "buffer.critical",
+                    {"ready": ready_count, "target": buffer_target},
+                )
+            elif buffer_state == "low":
+                event_bus.emit(
+                    "buffer.low",
+                    {"ready": ready_count, "target": buffer_target},
+                )
 
         # Generate if below target
         if ready_count < buffer_target:
@@ -125,8 +146,13 @@ class MusicBufferManager:
         music_provider = registry.get_music_provider()
 
         if music_provider is None:
-            logger.warning("No music provider configured, cannot generate tracks")
+            if not self._warned_no_provider:
+                self._warned_no_provider = True
+                logger.warning(
+                    "No music provider configured, cannot generate tracks"
+                )
             return
+        self._warned_no_provider = False
 
         self._generating = True
         track = None
@@ -135,8 +161,11 @@ class MusicBufferManager:
             # Select a style (show-specific if applicable)
             style = await self._select_style(session, show_id=show_id)
             if style is None:
-                logger.warning("No active styles available for generation")
+                if not self._warned_no_styles:
+                    self._warned_no_styles = True
+                    logger.warning("No active styles available for generation")
                 return
+            self._warned_no_styles = False
 
             # Get content policy suffix from effective DJ config
             dj_config = await get_effective_dj_config(session, show_id=show_id)
@@ -188,18 +217,20 @@ class MusicBufferManager:
             gen_result = await music_provider.generate(full_prompt)
 
             # Process audio through pipeline (the raw provider download is
-            # an intermediate file — delete it once processed)
+            # an intermediate file — delete it once processed). A missing
+            # filepath is a hard failure: a "ready" track without audio
+            # would only fail later at queue time.
             filepath = gen_result.get("filepath", "")
-            if filepath:
-                processed = await self._pipeline.process(
-                    filepath, delete_source=True
+            if not filepath:
+                raise RuntimeError(
+                    f"{type(music_provider).__name__} returned no file path"
                 )
-                track.filepath = processed["processed_path"]
-                track.duration = processed["duration"]
-                track.loudness_lufs = processed["loudness_lufs"]
-            else:
-                track.filepath = filepath
-                track.duration = gen_result.get("duration", 0)
+            processed = await self._pipeline.process(
+                filepath, delete_source=True
+            )
+            track.filepath = processed["processed_path"]
+            track.duration = processed["duration"]
+            track.loudness_lufs = processed["loudness_lufs"]
 
             track.title = gen_result.get("title", "Untitled")
             track.lyrics = gen_result.get("lyrics", "") or ""

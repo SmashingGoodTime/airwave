@@ -1,11 +1,12 @@
 """Show model representing a scheduled broadcast block."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from server.database import Base
+from server.utils.timeutils import utcnow_naive
 
 
 class Show(Base):
@@ -26,11 +27,7 @@ class Show(Base):
     dj_config_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("dj_configs.id", ondelete="SET NULL"), nullable=True
     )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc)
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        DateTime, default=utcnow_naive, onupdate=utcnow_naive
     )

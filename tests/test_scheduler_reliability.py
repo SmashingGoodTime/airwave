@@ -134,6 +134,7 @@ async def test_queue_next_track_marks_previous_playing_as_played_and_logs(
     await scheduler._queue_next_track(db_session)
     await db_session.refresh(next_track)
     assert next_track.status == "queued"
+    assert next_track.queued_at is not None
     assert fake_playout.queued_tracks == [str(audio_file)]
     assert fake_playout.metadata_updates == [("Next Song", "Test FM")]
     assert scheduler._dj_brain._tracks_since_break == 1
@@ -747,3 +748,155 @@ async def test_reconcile_is_idempotent_for_already_playing_item(db_session, tmp_
     assert logs == []   # no duplicate play logged
     await db_session.refresh(track)
     assert track.status == "playing"
+
+
+@pytest.mark.asyncio
+async def test_force_show_reload_returns_persisted_show(db_session):
+    """A forced reload must re-read the persisted show, not advance rotation.
+
+    /streaming/switch persists the operator's requested show and then forces
+    a reload; advancing here would land one show past the one they picked.
+    """
+    from server.utils.timeutils import utcnow_naive
+
+    show_a = Show(name="A", active=True, duration_minutes=30, queue_order=0)
+    show_b = Show(name="B", active=True, duration_minutes=30, queue_order=1)
+    show_c = Show(name="C", active=True, duration_minutes=30, queue_order=2)
+    db_session.add_all([show_a, show_b, show_c])
+    await db_session.flush()
+    station = Station(
+        setup_complete=True,
+        broadcast_mode="scheduled",
+        current_show_id=show_b.id,
+        current_show_started_at=utcnow_naive(),
+    )
+    db_session.add(station)
+    await db_session.commit()
+
+    scheduler = make_scheduler()
+    scheduler._force_show_reload = True
+
+    active = await scheduler._get_active_show(db_session)
+    assert active is not None
+    assert active.id == show_b.id  # the persisted pick, NOT show C
+
+    # Without the force flag, a lapsed timer still rotates to the next show.
+    scheduler._force_show_reload = False
+    station.current_show_started_at = utcnow_naive() - timedelta(minutes=31)
+    await db_session.commit()
+
+    active = await scheduler._get_active_show(db_session)
+    assert active is not None
+    assert active.id == show_c.id
+
+
+@pytest.mark.asyncio
+async def test_cleanup_requeue_keyed_on_queued_at(db_session, monkeypatch, tmp_path):
+    """The stale-'queued' reset must key on queue time, not generation time.
+
+    Prefilled tracks can be arbitrarily old when queued; resetting them by
+    created_at put the same track into the Liquidsoap queue twice.
+    """
+    from server.utils.timeutils import utcnow_naive
+
+    audio_root = runtime_path(tmp_path, "audio_root")
+    monkeypatch.setattr("server.engine.scheduler.settings.AUDIO_DIR", str(audio_root))
+
+    old = utcnow_naive() - timedelta(hours=2)
+    recently_queued = Track(
+        title="Old but just queued",
+        status="queued",
+        created_at=old,
+        queued_at=utcnow_naive() - timedelta(minutes=1),
+    )
+    stale_queued = Track(
+        title="Push dropped by Liquidsoap",
+        status="queued",
+        created_at=old,
+        queued_at=utcnow_naive() - timedelta(minutes=31),
+    )
+    legacy_queued = Track(
+        title="Pre-upgrade row without queued_at",
+        status="queued",
+        created_at=utcnow_naive() - timedelta(minutes=1),
+        queued_at=None,
+    )
+    db_session.add_all(
+        [Station(disk_retention_days=30), recently_queued, stale_queued, legacy_queued]
+    )
+    await db_session.commit()
+
+    scheduler = make_scheduler()
+    await scheduler._run_cleanup(db_session)
+
+    for row in (recently_queued, stale_queued, legacy_queued):
+        await db_session.refresh(row)
+
+    assert recently_queued.status == "queued"  # still legitimately in the queue
+    assert stale_queued.status == "ready"
+    assert stale_queued.queued_at is None
+    assert legacy_queued.status == "ready"
+
+
+@pytest.mark.asyncio
+async def test_pick_fallback_prefers_normalized_by_stem(monkeypatch, tmp_path):
+    """Normalized copies replace their raw originals; un-normalized raws stay."""
+    fallback_dir = runtime_path(tmp_path, "fallback")
+    normalized_dir = fallback_dir / "normalized"
+    normalized_dir.mkdir(parents=True)
+    raw_song = fallback_dir / "song.mp3"
+    raw_song.write_bytes(b"raw")
+    raw_extra = fallback_dir / "extra.mp3"
+    raw_extra.write_bytes(b"raw")
+    norm_song = normalized_dir / "song.wav"
+    norm_song.write_bytes(b"normalized")
+
+    captured: dict[str, set] = {}
+
+    def fake_choice(seq):
+        captured["candidates"] = set(seq)
+        return seq[0]
+
+    monkeypatch.setattr("server.engine.scheduler.random.choice", fake_choice)
+
+    scheduler = make_scheduler()
+    scheduler._fallback_dir = fallback_dir
+    assert scheduler._pick_fallback_file() is not None
+
+    assert captured["candidates"] == {norm_song, raw_extra}
+
+
+@pytest.mark.asyncio
+async def test_dead_air_event_is_edge_triggered(db_session, monkeypatch, tmp_path):
+    """buffer.critical fires once per dead-air episode, not on every 5s tick."""
+    events = []
+    monkeypatch.setattr(
+        "server.engine.scheduler.event_bus.emit",
+        lambda event, data=None: events.append(event),
+    )
+
+    fallback_dir = runtime_path(tmp_path, "fallback")
+    fallback_dir.mkdir()
+    (fallback_dir / "fallback.wav").write_bytes(b"fake wav")
+
+    fake_playout = FakePlayout()
+    scheduler = make_scheduler(fake_playout)
+    scheduler._fallback_dir = fallback_dir
+
+    # Two consecutive dead-air ticks -> a single buffer.critical.
+    await scheduler._queue_next_track(db_session)
+    await scheduler._queue_next_track(db_session)
+    assert events.count("buffer.critical") == 1
+
+    # A real track queueing ends the episode and re-arms the alert.
+    audio_file = runtime_path(tmp_path, "song.wav")
+    audio_file.write_bytes(b"fake wav")
+    track = Track(filepath=str(audio_file), title="Back", status="ready")
+    db_session.add(track)
+    await db_session.commit()
+    await scheduler._queue_next_track(db_session)
+    assert scheduler._dead_air_active is False
+
+    # The buffer drains again (the track is now queued) -> a second alert.
+    await scheduler._queue_next_track(db_session)
+    assert events.count("buffer.critical") == 2

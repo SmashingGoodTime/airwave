@@ -1,12 +1,13 @@
 """Track model representing a generated music track."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from server.database import Base
+from server.utils.timeutils import utcnow_naive
 
 
 class Track(Base):
@@ -31,7 +32,9 @@ class Track(Base):
     loudness_lufs: Mapped[float | None] = mapped_column(Float, nullable=True)
     lyrics: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc)
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    # When the track was last pushed to the playout queue. Cleanup uses this
+    # (not created_at, which is generation time) to detect orphaned "queued"
+    # rows, since prefilled tracks can be arbitrarily old when queued.
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     played_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

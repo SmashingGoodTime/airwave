@@ -38,7 +38,10 @@ services:
     environment:
       ICECAST_SOURCE_PASSWORD: ${ICECAST_SOURCE_PASSWORD:-hackme}
       ICECAST_ADMIN_PASSWORD: ${ICECAST_ADMIN_PASSWORD:-hackme}
-      HARBOR_SOURCE_PASSWORD: ${HARBOR_SOURCE_PASSWORD:-hackme}
+      # Must NOT default to "hackme": the harbor caller input rejects the
+      # well-known Liquidsoap default even when the operator sets nothing
+      # (mirrors the default inside station.liq).
+      HARBOR_SOURCE_PASSWORD: ${HARBOR_SOURCE_PASSWORD:-airwave-caller-secret}
     volumes:
       - ./audio:/audio:ro
       - ./audio/recordings:/audio/recordings

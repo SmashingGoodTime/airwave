@@ -163,6 +163,7 @@ class DJBrain:
             logger.warning("No scriptwriter provider configured, skipping show intro")
             return None
 
+        job = None
         dj_break: DJBreak | None = None
         try:
             effective_show_id = show_id or (getattr(show, "id", None) if show else None)
@@ -191,11 +192,28 @@ class DJBrain:
 
             logger.info("Generating show intro DJ break...")
 
+            job = await start_generation_job(
+                session,
+                job_type="generate_show_intro",
+                capability="write_dj_break",
+                provider=type(scriptwriter).__name__,
+                input_data={
+                    "show_id": effective_show_id,
+                    "show_name": context.get("show_name"),
+                    "station_name": context.get("station_name"),
+                },
+            )
+            await session.commit()
+
             script_result = await scriptwriter.write_break(context)
             script_text = script_result.get("script_text", "")
 
             if not script_text:
                 logger.warning("Scriptwriter returned empty intro script")
+                await fail_generation_job(
+                    session, job, "Scriptwriter returned empty intro script"
+                )
+                await session.commit()
                 return None
 
             dj_break = DJBreak(
@@ -222,7 +240,17 @@ class DJBrain:
                 dj_break.duration = (word_count / 150) * 60
 
             dj_break.status = "ready"
-            await mirror_dj_break_ready(session, dj_break)
+            timeline_item = await mirror_dj_break_ready(session, dj_break)
+            await finish_generation_job(
+                session,
+                job,
+                output_data={
+                    "break_id": dj_break.id,
+                    "duration": dj_break.duration,
+                    "has_audio": dj_break.audio_filepath is not None,
+                },
+                output_asset_id=timeline_item.audio_asset_id,
+            )
             await session.commit()
 
             event_bus.emit("break.generated", {
@@ -246,12 +274,14 @@ class DJBrain:
                 await session.rollback()
             except Exception:
                 pass
-            if dj_break is not None and dj_break.id is not None:
-                try:
+            try:
+                if dj_break is not None and dj_break.id is not None:
                     dj_break.status = "failed"
-                    await session.commit()
-                except Exception:
-                    logger.warning("Could not mark show intro break as failed")
+                if job is not None:
+                    await fail_generation_job(session, job, exc)
+                await session.commit()
+            except Exception:
+                logger.warning("Could not mark show intro break/job as failed")
             event_bus.emit("provider.error", {
                 "provider": "scriptwriter",
                 "error": str(exc),
@@ -260,7 +290,6 @@ class DJBrain:
 
     async def generate_break(
         self, session: AsyncSession, show_id: int | None = None,
-        queue_offset: int = 0,
     ) -> DJBreak | None:
         """Generate a new DJ break based on current playback context.
 
@@ -271,9 +300,6 @@ class DJBrain:
         Args:
             session: Async database session.
             show_id: Optional active show ID for show-specific config.
-            queue_offset: Liquidsoap queue depth — used to skip tracks
-                that are marked played/playing in the DB but haven't
-                actually been heard by the listener yet.
 
         Returns:
             The created DJBreak record, or None if generation failed.
@@ -288,11 +314,7 @@ class DJBrain:
         job = None
         dj_break: DJBreak | None = None
         try:
-            # Assemble context, offset by queue depth so the DJ
-            # references songs the listener has actually heard.
-            context = await self._build_context(
-                session, show_id=show_id, queue_offset=queue_offset,
-            )
+            context = await self._build_context(session, show_id=show_id)
 
             logger.info("Generating DJ break script...")
 
@@ -303,7 +325,6 @@ class DJBrain:
                 provider=type(scriptwriter).__name__,
                 input_data={
                     "show_id": show_id,
-                    "queue_offset": queue_offset,
                     "station_name": context.get("station_name"),
                     "dj_name": context.get("dj_name"),
                 },
@@ -404,20 +425,12 @@ class DJBrain:
 
     async def _build_context(
         self, session: AsyncSession, show_id: int | None = None,
-        queue_offset: int = 0,
     ) -> dict:
         """Assemble context for the DJ break script generator.
 
         Args:
             session: Async database session.
             show_id: Optional active show ID for show-specific DJ config.
-            queue_offset: Number of tracks to skip from the most recent
-                "played"/"playing" results.  Tracks are marked as
-                "playing"/"played" in the DB the moment they are pushed
-                to Liquidsoap's queue, which runs ahead of what the
-                listener has actually heard.  Passing the current
-                Liquidsoap queue depth here corrects for that offset so
-                the DJ references songs the listener genuinely just heard.
 
         Returns:
             A dict with recent_tracks, announcements, station info, and time.
@@ -428,19 +441,17 @@ class DJBrain:
         # Get station config for timezone
         station = await get_station(session)
 
-        # Get recent tracks with their style info.
-        # Fetch extra rows equal to queue_offset so we can skip tracks
-        # that are still waiting in Liquidsoap's queue (their DB status
-        # has been prematurely advanced to "played"/"playing").
-        fetch_count = 5 + queue_offset
+        # Get recent tracks with their style info. The air-time reconciler
+        # only marks tracks "playing"/"played" when Liquidsoap actually airs
+        # them (queued-but-unheard tracks stay "queued"), so these are songs
+        # the listener has genuinely heard.
         result = await session.execute(
             select(Track)
             .where(Track.status.in_(["played", "playing"]))
             .order_by(Track.played_at.desc())
-            .limit(fetch_count)
+            .limit(5)
         )
-        all_tracks = result.scalars().all()
-        tracks = all_tracks[queue_offset:]
+        tracks = result.scalars().all()
 
         # Batch-fetch linked styles for genre/tag info
         style_ids = [t.style_id for t in tracks if t.style_id is not None]
@@ -575,11 +586,14 @@ class DJBrain:
         """
         dj_config = await get_effective_dj_config(session, show_id=show_id)
 
+        # An empty voice_id lets the active voice provider fall back to its
+        # own default voice (never assume a provider-specific voice name here
+        # — engine code must stay provider-neutral).
         if dj_config is None:
-            return {"voice_id": "Aoede"}  # Default Gemini TTS voice
+            return {"voice_id": ""}
 
         return parse_voice_settings(
-            dj_config.voice_settings, dj_config.voice_id or "Aoede"
+            dj_config.voice_settings, dj_config.voice_id or ""
         )
 
     async def increment_announcement_plays(

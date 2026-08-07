@@ -1,11 +1,12 @@
 """Announcement model for scheduled station announcements."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from server.database import Base
+from server.utils.timeutils import utcnow_naive
 
 
 class Announcement(Base):
@@ -20,6 +21,4 @@ class Announcement(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     play_count: Mapped[int] = mapped_column(Integer, default=0)
     max_plays: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc)
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)

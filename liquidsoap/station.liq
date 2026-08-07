@@ -39,12 +39,25 @@ queue = request.queue(id="queue")
 queue = blank.skip(id="queue_blank_skip", threshold=-50.0, max_blank=15.0, queue)
 
 # =====================
-# Fallback Source
+# Fallback Sources
 # =====================
 # Emergency audio that plays when the queue is empty.
-# Watches the directory for new files and plays them in random order.
-fallback_src = playlist(
-  id="fallback",
+#
+# Two tiers: the app normalizes user-supplied fallback audio into
+# fallback/normalized/ at startup (loudness-matched to the -14 LUFS
+# program), so that cache is preferred. The raw directory is only the
+# last resort for a fresh install where normalization has not run yet —
+# whenever normalized/ has files, raw files never air (which also avoids
+# double-rotation, since the recursive raw scan sees both copies).
+fallback_norm = playlist(
+  id="fallback_norm",
+  mode="random",
+  reload_mode="watch",
+  "/audio/fallback/normalized/"
+)
+
+fallback_raw = playlist(
+  id="fallback_raw",
   mode="random",
   reload_mode="watch",
   "/audio/fallback/"
@@ -108,11 +121,12 @@ caller_live = source.available(id="caller_gated", caller_input, {caller_enabled(
 # =====================
 # Source Chain
 # =====================
-# Priority: live caller (when enabled) > queue > fallback playlist > silence
+# Priority: live caller (when enabled) > queue > normalized fallback >
+# raw fallback > silence
 radio = fallback(
   id="radio",
   track_sensitive=false,
-  [caller_live, queue, fallback_src, silence_src]
+  [caller_live, queue, fallback_norm, fallback_raw, silence_src]
 )
 
 # =====================

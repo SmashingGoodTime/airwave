@@ -238,8 +238,12 @@ export function fetchStreamingStatus() {
   return apiFetch('/streaming/status')
 }
 
+// Start/switch block on Liquidsoap readiness plus DJ intro generation
+// (script + TTS + normalization), which routinely takes 20-90s — far past
+// the default 15s timeout. Aborting early left the UI claiming failure
+// while the backend went on air anyway.
 export function startStreaming(data = {}) {
-  return apiFetch('/streaming/start', { method: 'POST', body: data })
+  return apiFetch('/streaming/start', { method: 'POST', body: data, timeout: 180000 })
 }
 
 export function stopStreaming() {
@@ -247,7 +251,7 @@ export function stopStreaming() {
 }
 
 export function switchStreamingMode(data = {}) {
-  return apiFetch('/streaming/switch', { method: 'POST', body: data })
+  return apiFetch('/streaming/switch', { method: 'POST', body: data, timeout: 180000 })
 }
 
 // Reorder Shows

@@ -94,9 +94,11 @@ class PlayoutInterface:
             The equivalent path inside the Liquidsoap container.
         """
         normalized = str(Path(filepath).resolve()).replace("\\", "/")
-        # Find the /audio/ segment and keep everything from there
+        # Keep everything from the LAST /audio/ segment: the project itself
+        # may live under a directory named "audio" (e.g. /home/x/audio/Radio),
+        # and only the final segment maps to the container mount.
         marker = "/audio/"
-        idx = normalized.find(marker)
+        idx = normalized.rfind(marker)
         if idx != -1:
             return normalized[idx:]
         # Fallback: if path doesn't contain /audio/, send as-is

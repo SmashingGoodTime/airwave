@@ -386,7 +386,12 @@ class SunoMusicProvider(MusicProvider):
             response = await client.get("/api/v1/generate/credit")
             if response.status_code == 200:
                 data = response.json()
-                credits = data.get("data", 0)
+                # "data" can be JSON null (or an unexpected shape) — treat
+                # anything non-numeric as zero credits rather than raising.
+                raw_credits = data.get("data")
+                credits = (
+                    raw_credits if isinstance(raw_credits, (int, float)) else 0
+                )
                 if credits > 0:
                     self._rate_limiter.record_success()
                     return True

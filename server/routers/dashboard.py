@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi import (
@@ -29,7 +30,7 @@ from server.models.show import Show
 from server.models.station import Station, get_station
 from server.models.track import Track
 from server.providers.registry import ProviderRegistry
-from server.utils.timeutils import to_utc_iso
+from server.utils.timeutils import to_utc_iso, utcnow_naive
 from server.engine.timeline_reconciliation import count_unmirrored_ready_source
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -37,6 +38,10 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 # Cap on how many ready-asset files are checked per health request so the
 # filesystem sweep stays bounded as the asset table grows.
 ASSET_FILE_CHECK_LIMIT = 500
+
+# Window for the "recent failed jobs" health diagnostic. Without a bound, a
+# single failure ever would keep the health endpoint unhealthy forever.
+FAILED_JOBS_WINDOW = timedelta(hours=24)
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +244,10 @@ async def get_timeline_health(
     )
 
     recent_failed_jobs = await session.scalar(
-        select(func.count(GenerationJob.id)).where(GenerationJob.status == "failed")
+        select(func.count(GenerationJob.id)).where(
+            GenerationJob.status == "failed",
+            GenerationJob.created_at >= utcnow_naive() - FAILED_JOBS_WINDOW,
+        )
     ) or 0
 
     reconciliation = await build_timeline_reconciliation(session)

@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.config import settings
@@ -50,6 +50,11 @@ SHOW_CHECK_INTERVAL = 30  # Check for show transitions
 
 # Rows stuck in a transient generation state longer than this are reaped
 STUCK_GENERATION_MAX_AGE = timedelta(hours=2)
+
+# Failed track rows older than this are deleted (the generation_jobs table
+# keeps the failure history); finished jobs older than JOB_RETENTION go too.
+FAILED_TRACK_RETENTION = timedelta(days=1)
+JOB_RETENTION = timedelta(days=7)
 
 
 class MasterScheduler:
@@ -91,6 +96,9 @@ class MasterScheduler:
         # what was last pushed to the queue a track ahead.
         self._on_air_path: str | None = None
         self._on_air_playlog_id: int | None = None
+        # True while the queue is being fed from fallback audio. Used to
+        # edge-trigger buffer.critical instead of emitting on every tick.
+        self._dead_air_active = False
 
     async def start(self) -> None:
         """Start all scheduler loops as background tasks."""
@@ -103,7 +111,7 @@ class MasterScheduler:
 
         # Ensure audio directories exist
         for subdir in [
-            "tracks", "breaks", "fallback", "archive",
+            "tracks", "breaks", "fallback", "fallback/normalized", "archive",
             "calls", "calls/raw", "calls/processed",
             "recordings",
         ]:
@@ -228,6 +236,30 @@ class MasterScheduler:
         self._streaming = False
         show_id = self._current_show_id
         self._current_show_id = None
+
+        # Drop any pre-generated break: its context (recent tracks, time of
+        # day) would be stale by the time streaming restarts.
+        if self._pending_break_task is not None:
+            self._pending_break_task.cancel()
+            self._pending_break_task = None
+        self._pending_break = None
+
+        # Close the open playlog row and clear reconciler state — with the
+        # playout loop stopped, nothing else would ever stamp its ended_at.
+        if self._on_air_playlog_id is not None:
+            try:
+                factory = get_session_factory()
+                async with factory() as session:
+                    playlog = await session.get(PlayLog, self._on_air_playlog_id)
+                    if playlog is not None and playlog.ended_at is None:
+                        playlog.ended_at = utcnow_naive()
+                        await session.commit()
+            except Exception as exc:
+                logger.warning("Could not close on-air playlog on stop: %s", exc)
+        self._on_air_playlog_id = None
+        self._on_air_path = None
+        self._dead_air_active = False
+
         logger.info("Streaming stopped")
 
         event_bus.emit("stream.stopped", {"show_id": show_id})
@@ -568,9 +600,7 @@ class MasterScheduler:
         # Check if it's time for a DJ break
         if self._dj_brain.should_break(break_freq, break_var):
             try:
-                dj_break = await self._use_or_generate_break(
-                    session, show_id, queue_length
-                )
+                dj_break = await self._use_or_generate_break(session, show_id)
                 if dj_break and dj_break.audio_filepath:
                     break_title = (
                         f"{dj_config.dj_name} — DJ Break"
@@ -602,7 +632,7 @@ class MasterScheduler:
         elif self._dj_brain.should_prepare_break(break_freq, break_var):
             # One track before break time — start pre-generating in the
             # background so the break is ready instantly when needed.
-            self._start_break_pregeneration(show_id, queue_length)
+            self._start_break_pregeneration(show_id)
 
         # Queue the next track
         await self._queue_next_track(session)
@@ -611,15 +641,12 @@ class MasterScheduler:
         self,
         session: AsyncSession,
         show_id: int | None,
-        queue_length: int,
     ) -> DJBreak | None:
         """Use a pre-generated break if available, otherwise generate one now.
 
         Args:
             session: Async database session.
             show_id: Active show ID.
-            queue_length: Current Liquidsoap queue depth (used to offset
-                the context query so the DJ references actually-heard songs).
 
         Returns:
             A ready DJBreak, or None.
@@ -657,20 +684,15 @@ class MasterScheduler:
             )
             return dj_break
 
-        # Fallback: generate synchronously (old behavior, with offset fix)
+        # Fallback: generate synchronously (old behavior)
         logger.info("No pre-generated break ready, generating synchronously")
-        return await self._dj_brain.generate_break(
-            session, show_id=show_id, queue_offset=queue_length,
-        )
+        return await self._dj_brain.generate_break(session, show_id=show_id)
 
-    def _start_break_pregeneration(
-        self, show_id: int | None, queue_length: int,
-    ) -> None:
+    def _start_break_pregeneration(self, show_id: int | None) -> None:
         """Kick off background break generation one track early.
 
         Args:
             show_id: Active show ID.
-            queue_length: Current Liquidsoap queue depth for context offset.
         """
         if self._pending_break_task is not None:
             return  # already running
@@ -679,9 +701,7 @@ class MasterScheduler:
             factory = get_session_factory()
             async with factory() as bg_session:
                 return await self._dj_brain.generate_break(
-                    bg_session,
-                    show_id=show_id,
-                    queue_offset=queue_length,
+                    bg_session, show_id=show_id
                 )
 
         self._pending_break_task = asyncio.create_task(
@@ -697,7 +717,9 @@ class MasterScheduler:
         scheduled mode, when the current show's timer has lapsed this
         computes the *next* show in the queue without persisting the
         rotation — only :meth:`_show_transition_step` (the single writer)
-        commits transitions.
+        commits transitions. A pending force-reload instead re-reads the
+        persisted show selection as-is (restarting its timer) rather than
+        advancing the rotation.
 
         Args:
             session: Async database session.
@@ -728,11 +750,15 @@ class MasterScheduler:
             )
             current_show = result.scalar_one_or_none()
 
-        if (
-            current_show
-            and not self._force_show_reload
-            and not self._show_timer_expired(station, current_show)
-        ):
+        if current_show and self._force_show_reload:
+            # A forced reload re-reads the persisted selection (e.g.
+            # /streaming/switch just wrote the requested show) and restarts
+            # its timer via _persist_show_transition. It must NOT advance
+            # the rotation — that would land one show past the one the
+            # operator explicitly picked.
+            return current_show
+
+        if current_show and not self._show_timer_expired(station, current_show):
             return current_show
 
         # A transition is due — compute (do not persist) the next show
@@ -905,8 +931,34 @@ class MasterScheduler:
             # advances the break-pacing counter at queue time so breaks are
             # still spaced by queue order.
             track.status = "queued"
+            track.queued_at = utcnow_naive()
             await session.commit()
             self._dj_brain.track_played()
+            self._dead_air_active = False
+
+    def _pick_fallback_file(self) -> Path | None:
+        """Choose a fallback file, preferring the normalized cache.
+
+        Files are keyed by stem so a normalized copy (built by
+        :meth:`_normalize_fallback_files` into ``fallback/normalized/``)
+        replaces its raw original, while raw files not yet normalized
+        (e.g. dropped in after startup) remain eligible.
+
+        Returns:
+            A fallback audio file path, or None if none exist.
+        """
+        candidates: dict[str, Path] = {}
+        for pattern in ("*.mp3", "*.wav"):
+            for raw in self._fallback_dir.glob(pattern):
+                candidates[raw.stem] = raw
+        normalized_dir = self._fallback_dir / "normalized"
+        if normalized_dir.exists():
+            for pattern in ("*.mp3", "*.wav"):
+                for norm in normalized_dir.glob(pattern):
+                    candidates[norm.stem] = norm
+        if not candidates:
+            return None
+        return random.choice(list(candidates.values()))
 
     async def _handle_dead_air(self, session: AsyncSession) -> None:
         """Activate fallback audio when no tracks are available.
@@ -915,7 +967,11 @@ class MasterScheduler:
             session: Async database session (retained for signature stability;
                 fallback airtime is logged by the reconciler).
         """
-        event_bus.emit("buffer.critical", {"ready": 0, "target": 0})
+        # Edge-trigger: emit once when dead air starts, not on every 5s tick.
+        # The flag is cleared when a real track is queued again.
+        if not self._dead_air_active:
+            self._dead_air_active = True
+            event_bus.emit("buffer.critical", {"ready": 0, "target": 0})
 
         if not self._fallback_dir.exists():
             logger.error(
@@ -923,15 +979,11 @@ class MasterScheduler:
             )
             return
 
-        fallback_files = list(self._fallback_dir.glob("*.mp3")) + list(
-            self._fallback_dir.glob("*.wav")
-        )
+        fallback = self._pick_fallback_file()
 
-        if not fallback_files:
+        if fallback is None:
             logger.error("DEAD AIR: No fallback audio files found")
             return
-
-        fallback = random.choice(fallback_files)
         logger.warning(
             "Dead air protection: queueing fallback %s", fallback.name
         )
@@ -1209,43 +1261,64 @@ class MasterScheduler:
                 "Marked %d stale playing tracks as played", stale_count
             )
 
-        # Reset tracks stuck in "queued" back to "ready" (>30 min): the app
-        # pushed them to Liquidsoap but they never reached air — e.g. the
-        # Liquidsoap container restarted and dropped its request queue. This
-        # is well beyond any real track length, so it only catches orphans.
+        # Reset tracks stuck in "queued" back to "ready": the app pushed them
+        # to Liquidsoap but they never reached air — e.g. the Liquidsoap
+        # container restarted and dropped its request queue. Keyed on
+        # queued_at (stamped at push time), NOT created_at: prefilled tracks
+        # can be arbitrarily old when queued, and 30 minutes since the push
+        # is well beyond any real track length. A NULL queued_at
+        # (pre-upgrade row) is treated as orphaned.
         queued_cutoff = utcnow_naive() - timedelta(minutes=30)
         result = await session.execute(
             select(Track).where(Track.status == "queued")
         )
         requeued = 0
         for track in result.scalars().all():
-            created = track.created_at
-            if created is not None and created.tzinfo is not None:
-                created = created.replace(tzinfo=None)
-            if created is None or created < queued_cutoff:
+            queued_at = track.queued_at
+            if queued_at is not None and queued_at.tzinfo is not None:
+                queued_at = queued_at.replace(tzinfo=None)
+            if queued_at is None or queued_at < queued_cutoff:
                 track.status = "ready"
+                track.queued_at = None
                 requeued += 1
         if requeued:
             logger.info(
                 "Reset %d orphaned 'queued' tracks back to 'ready'", requeued
             )
 
-        # Clean up failed tracks (remove DB records for tracks with no file)
+        # Clean up failed tracks: delete their audio files, and drop rows
+        # past retention (generation_jobs keeps the failure history).
+        failed_cutoff = utcnow_naive() - FAILED_TRACK_RETENTION
         result = await session.execute(
             select(Track).where(Track.status == "failed")
         )
+        removed_failed = 0
         for track in result.scalars().all():
             if track.filepath and Path(track.filepath).exists():
                 try:
                     Path(track.filepath).unlink()
                 except OSError:
-                    pass
+                    # File is stuck; keep the row so deletion retries next run.
+                    continue
+            created = track.created_at
+            if created is not None and created.tzinfo is not None:
+                created = created.replace(tzinfo=None)
+            if created is None or created < failed_cutoff:
+                await session.delete(track)
+                removed_failed += 1
+        if removed_failed:
+            logger.info(
+                "Deleted %d failed track rows past retention", removed_failed
+            )
 
         await session.commit()
 
         # Reap rows stuck mid-generation (e.g. a crash or provider hang left
         # them in a transient state with no worker to finish them).
         await self._reap_stuck_generations(session)
+
+        # Prune finished generation jobs past retention.
+        await self._prune_finished_jobs(session)
 
         # Remove audio files no DB row references (failed generations)
         await self._cleanup_orphan_audio(session)
@@ -1303,6 +1376,30 @@ class MasterScheduler:
                 STUCK_GENERATION_MAX_AGE,
             )
             await session.commit()
+
+    async def _prune_finished_jobs(self, session: AsyncSession) -> None:
+        """Delete finished generation jobs older than :data:`JOB_RETENTION`.
+
+        Diagnostics only need recent history; without pruning, the jobs
+        table (and the dashboard's failed-job count) grows forever.
+
+        Args:
+            session: Async database session.
+        """
+        cutoff = utcnow_naive() - JOB_RETENTION
+        result = await session.execute(
+            delete(GenerationJob).where(
+                GenerationJob.status.in_(("succeeded", "failed")),
+                GenerationJob.created_at < cutoff,
+            )
+        )
+        if result.rowcount:
+            await session.commit()
+            logger.info(
+                "Pruned %d finished generation jobs older than %s",
+                result.rowcount,
+                JOB_RETENTION,
+            )
 
     async def _cleanup_orphan_audio(self, session: AsyncSession) -> None:
         """Delete stale audio files in breaks/ that no row references.

@@ -1,11 +1,12 @@
 """Play log model for tracking playback history."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from server.database import Base
+from server.utils.timeutils import utcnow_naive
 
 
 class PlayLog(Base):
@@ -17,7 +18,7 @@ class PlayLog(Base):
     item_type: Mapped[str] = mapped_column(String, nullable=False)
     item_id: Mapped[int] = mapped_column(Integer, nullable=False)
     started_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc), index=True
+        DateTime, default=utcnow_naive, index=True
     )
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     duration: Mapped[float | None] = mapped_column(Float, nullable=True)
