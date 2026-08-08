@@ -18,9 +18,17 @@ const EMPTY_CONFIG = {
   voice_settings: '',
   break_frequency: 4,
   break_frequency_variance: 1,
+  max_break_duration: 60,
   content_policy: 'clean_vocals',
   content_policy_suffix: '',
   mention_time: false,
+}
+
+function formatDuration(seconds) {
+  if (seconds < 60) return `${seconds}s`
+  const mins = Math.floor(seconds / 60)
+  const rem = seconds % 60
+  return rem ? `${mins}m ${rem}s` : `${mins}m`
 }
 
 function DJConfig() {
@@ -102,6 +110,7 @@ function DJConfig() {
       voice_settings: cfg.voice_settings || '',
       break_frequency: cfg.break_frequency ?? 4,
       break_frequency_variance: cfg.break_frequency_variance ?? 1,
+      max_break_duration: cfg.max_break_duration ?? 60,
       content_policy: cfg.content_policy || 'clean_vocals',
       content_policy_suffix: cfg.content_policy_suffix || '',
       mention_time: cfg.mention_time ?? false,
@@ -356,6 +365,26 @@ function DJConfig() {
                         />
                         <span className="range-value">{form.break_frequency_variance}</span>
                       </div>
+                    </div>
+                  </div>
+                  <div className="form-group">
+                    <label>Break Length</label>
+                    <div className="range-group">
+                      <input
+                        type="range"
+                        min="10"
+                        max="180"
+                        step="5"
+                        value={form.max_break_duration}
+                        onChange={e => updateField('max_break_duration', Number(e.target.value))}
+                      />
+                      <span className="range-value">{formatDuration(form.max_break_duration)}</span>
+                    </div>
+                    <div className="help-text">
+                      How long the DJ talks for. Scripts target about{' '}
+                      {Math.round(form.max_break_duration * 1.5)} words &mdash; roughly{' '}
+                      {Math.round(form.max_break_duration * 0.6)}s of speech &mdash; and the writer is
+                      told to stay under {formatDuration(form.max_break_duration)}.
                     </div>
                   </div>
                 </div>
