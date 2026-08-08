@@ -1,5 +1,6 @@
 """Async SQLAlchemy database configuration and session management."""
 
+import logging
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Optional
@@ -14,6 +15,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -83,15 +87,62 @@ def get_alembic_config() -> Config:
 
 
 async def run_migrations() -> None:
-    """Upgrade the configured database to the latest Alembic revision."""
+    """Upgrade the configured database to the latest Alembic revision.
+
+    SQLite cannot change a table's shape in place, so a migration that alters
+    one rebuilds it: copy the rows out, ``DROP TABLE``, rename the copy back.
+    With ``foreign_keys=ON`` that drop performs an implicit delete which fires
+    ``ON DELETE CASCADE`` on child rows — rebuilding ``shows`` would silently
+    wipe every show/style link. Enforcement is therefore off for the upgrade,
+    and since ``PRAGMA foreign_keys`` is a no-op inside a transaction it has to
+    be set before Alembic opens one. It is restored before the connection goes
+    back to the pool, and the result is checked for orphans.
+    """
 
     def _upgrade(sync_connection) -> None:
         config = get_alembic_config()
         config.attributes["connection"] = sync_connection
         command.upgrade(config, "head")
 
-    async with get_engine().begin() as conn:
-        await conn.run_sync(_upgrade)
+    engine = get_engine()
+    is_sqlite = engine.dialect.name == "sqlite"
+
+    async with engine.connect() as conn:
+        if is_sqlite:
+            await conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        try:
+            await conn.run_sync(_upgrade)
+        except Exception:
+            await conn.rollback()
+            raise
+        else:
+            await conn.commit()
+        finally:
+            if is_sqlite:
+                await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+
+    if is_sqlite:
+        await _log_foreign_key_violations()
+
+
+async def _log_foreign_key_violations() -> None:
+    """Warn about rows left pointing at a missing parent after migrating.
+
+    Migrations run without foreign key enforcement, so this is the check that
+    would otherwise have happened as they went. Orphans are reported rather
+    than raised on: a stale reference is not worth refusing to go on air over.
+    """
+    async with get_engine().connect() as conn:
+        result = await conn.exec_driver_sql("PRAGMA foreign_key_check")
+        violations = result.fetchall()
+
+    if violations:
+        tables = sorted({row[0] for row in violations})
+        logger.warning(
+            "Foreign key check found %d orphaned row(s) after migration in: %s",
+            len(violations),
+            ", ".join(tables),
+        )
 
 
 async def init_db() -> None:
